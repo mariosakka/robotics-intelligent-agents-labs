@@ -1,0 +1,676 @@
+LAB 3 - UBUNTU 16.04 + ROS KINETIC + E-PUCK + COPPELIASIM 4.1 - VERY DETAILED STEP BY STEP
+
+Use Ubuntu 16.04 VM with ROS Kinetic.
+Keep old terminals open.
+Do NOT close terminals unless a step explicitly says to restart something.
+Use user mario.
+Use paths in home folder.
+This guide follows the same simple style as the Lab 2 template, but adapted to everything we actually did.
+
+IMPORTANT COMPATIBILITY NOTE
+==================================================
+
+Original Lab 3 was made for:
+- Ubuntu 14.04
+- ROS Indigo
+- old V-REP 3.x
+
+This guide uses:
+- Ubuntu 16.04
+- ROS Kinetic
+- CoppeliaSim Edu 4.1.0 for Ubuntu 16.04
+
+That means:
+- some names changed from V-REP to CoppeliaSim
+- old model scripts may show compatibility warnings
+- TF warnings may appear in RViz
+- the setup can still work for the lab if:
+  - roscore runs
+  - the e-puck topics appear
+  - the robot moves
+  - proximity values change near obstacles
+
+Reference from the lab PDF:
+- start roscore
+- start V-REP/CoppeliaSim and load the modified e-puck model
+- start the simulation
+- start RViz with the provided config
+- inspect topics such as /ePuck0/cmd_vel and /ePuck0/proximity0..7
+
+==================================================
+STEP 1 - TERMINAL 1 - CHECK BASIC PREREQUISITES
+==================================================
+
+Run:
+
+whoami
+lsb_release -a
+echo $ROS_DISTRO
+which roscore
+which rosrun
+which rviz
+
+Then run:
+
+source /opt/ros/kinetic/setup.bash
+echo $ROS_DISTRO
+which roscore
+which rosrun
+which rviz
+
+Expected:
+- whoami -> mario
+- Ubuntu version -> 16.04.x
+- ROS_DISTRO -> kinetic
+- roscore, rosrun, rviz should all have paths
+
+Why:
+This checks that Ubuntu 16.04 and ROS Kinetic are really present before doing anything else.
+
+Troubleshooting for this section:
+- If echo $ROS_DISTRO is empty, run:
+  source /opt/ros/kinetic/setup.bash
+- If which roscore or which rviz is empty, ROS Kinetic is not properly installed.
+- If lsb_release is not 16.04, stop and adjust the guide for your actual system.
+
+Keep Terminal 1 open.
+
+==================================================
+STEP 2 - TERMINAL 1 - CHECK LAB FILES AND SIMULATOR
+==================================================
+
+Run:
+
+source /opt/ros/kinetic/setup.bash
+ls -lah ~
+ls -lah ~/epuck_vrep_ros
+find ~/epuck_vrep_ros -maxdepth 1 -type f | sort
+which vrep
+which coppeliaSim
+which coppelia-sim
+
+What this checks:
+- whether the lab folder already exists
+- whether e-puck.ttm and the RViz config exist
+- whether the simulator is already installed on PATH
+
+Expected:
+- ~/epuck_vrep_ros may or may not exist yet
+- maybe no simulator found yet
+
+Troubleshooting for this section:
+- If ~/epuck_vrep_ros does not exist, that is fine. We solve it in the next section.
+- If all simulator commands are empty, that only means the simulator is not on PATH or not installed yet.
+- Do NOT use /root/... paths. Use /home/mario/... paths only.
+
+==================================================
+STEP 3 - TERMINAL 1 - SEARCH FOR FILES YOU MAY HAVE DOWNLOADED EARLIER
+==================================================
+
+Run:
+
+find ~ -maxdepth 3 \( -iname "epuck_vrep_ros" -o -iname "e-puck.ttm" -o -iname "vp_single_epuck.rviz" -o -iname "vrep" -o -iname "V-REP*" -o -iname "coppelia*" \) 2>/dev/null | sort
+
+Then run:
+
+find ~/Downloads -maxdepth 3 2>/dev/null | grep -Ei 'epuck|vrep|coppelia|rviz'
+
+Why:
+You may already have downloaded the repo or simulator somewhere else.
+
+Troubleshooting for this section:
+- If both commands return nothing, that is okay. We download what we need manually.
+- If you find an old repo in another folder, you can still use it, but this guide standardizes everything into ~/epuck_vrep_ros.
+
+==================================================
+STEP 4 - TERMINAL 1 - DOWNLOAD THE E-PUCK LAB REPO
+==================================================
+
+We used this repo:
+https://github.com/andrei91ro/epuck_vrep_ros
+
+Run:
+
+cd ~
+git clone https://github.com/andrei91ro/epuck_vrep_ros.git
+ls -lah ~/epuck_vrep_ros
+find ~/epuck_vrep_ros -maxdepth 1 -type f | sort
+
+Expected files:
+- e-puck.ttm
+- epuck_vrep_ros.lua
+- README.md
+- vrep_single_epuck.rviz
+
+Important note:
+The PDF shows a config name like vp_single_epuck.rviz, but the actual repo file we used was:
+vrep_single_epuck.rviz
+
+Troubleshooting for this section:
+- If git clone fails, first check internet connection.
+- If git is missing, install it later with apt.
+- If the folder already exists and you want a clean copy:
+  rm -rf ~/epuck_vrep_ros
+  then clone again
+
+Keep Terminal 1 open.
+
+==================================================
+STEP 5 - TERMINAL 1 - SEARCH WIDER FOR A SIMULATOR INSTALL
+==================================================
+
+Run:
+
+find ~ /opt -maxdepth 3 \( -type f -o -type l \) \( -iname "vrep" -o -iname "vrep.sh" -o -iname "coppeliaSim" -o -iname "coppeliaSim.sh" -o -iname "coppelia-sim.sh" \) 2>/dev/null | sort
+
+If nothing is found, search a bit wider:
+
+sudo find /home /opt /usr/local /srv /media /mnt -maxdepth 4 \
+\( -type f -o -type l \) \
+\( -iname "vrep" -o -iname "vrep.sh" -o -iname "coppeliaSim" -o -iname "coppeliaSim.sh" -o -iname "coppelia-sim.sh" \) \
+2>/dev/null | sort
+
+Why:
+This checks whether the simulator is already on disk but just not on PATH.
+
+Troubleshooting for this section:
+- If nothing is found, move on to the install section.
+- If you find both old V-REP and new CoppeliaSim, prefer the one that matches the rest of your setup.
+- We found nothing, so we installed CoppeliaSim manually.
+
+==================================================
+STEP 6 - TERMINAL 1 - INSTALL SUPPORTING PACKAGES
+==================================================
+
+Run:
+
+sudo apt update
+sudo apt install -y git cmake python-tempita python-catkin-tools python-lxml default-jre xsltproc
+
+Then verify:
+
+which git
+which cmake
+which catkin
+which xsltproc
+
+Why:
+These helper tools are useful for ROS-related compatibility and old simulator interface workflows.
+
+Troubleshooting for this section:
+- If sudo apt update fails with a ROS key error such as:
+  NO_PUBKEY F42ED6FBAB17C654
+  do NOT continue yet. Fix the key in the next step.
+- If apt install says python-catkin-tools is unauthenticated, that usually also comes from the missing ROS key.
+- xsltproc is important on Ubuntu 16.04 for older ROS/simulator build instructions.
+
+==================================================
+STEP 7 - TERMINAL 1 - FIX THE ROS APT KEY IF APT UPDATE FAILS
+==================================================
+
+If apt update showed:
+NO_PUBKEY F42ED6FBAB17C654
+
+Run:
+
+sudo apt install -y curl
+curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | sudo apt-key add -
+sudo apt update
+
+Expected:
+- apt-key add should print:
+  OK
+- apt update should finish without the old ROS key error
+
+Then retry the package install from Step 6:
+
+sudo apt install -y git cmake python-tempita python-catkin-tools python-lxml default-jre xsltproc
+
+Troubleshooting for this section:
+- If apt-key add does not print OK, check internet connectivity.
+- If the key still does not work, re-run sudo apt update and carefully read whether the key error changed.
+- If packages still fail, install them one by one to isolate the problem.
+
+==================================================
+STEP 8 - DOWNLOAD THE SIMULATOR
+==================================================
+
+What we wanted originally:
+- V-REP PRO EDU 3.4.0 Linux
+
+What happened:
+- the old official V-REP 3.4.0 direct links were no longer available
+- SourceForge and archive checks were also unsuccessful
+- we switched to the fallback:
+  CoppeliaSim Edu 4.1.0 for Ubuntu 16.04
+
+Important warning:
+This fallback is newer than the original lab target, so compatibility warnings can appear.
+That is acceptable if the actual robot behavior works.
+
+Use the official previous-versions page and download:
+
+CoppeliaSim Edu V4.1.0 Ubuntu 16.04
+
+File name used:
+CoppeliaSim_Edu_V4_1_0_Ubuntu16_04.tar.xz
+
+After downloading, verify:
+
+ls -lah ~/Downloads | grep 'CoppeliaSim_Edu_V4_1_0_Ubuntu16_04.tar.xz'
+
+Troubleshooting for this section:
+- Get the Edu version, not Pro, unless you specifically need a Pro license.
+- Do not try to convert a Windows simulator package into a Linux one. That is not a real solution.
+- A Windows package can provide models or scripts, but not a native Linux simulator executable.
+
+==================================================
+STEP 9 - TERMINAL 1 - EXTRACT COPPELIASIM
+==================================================
+
+Run:
+
+cd ~
+tar -xf ~/Downloads/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04.tar.xz
+ls -lah ~ | grep CoppeliaSim
+find ~/CoppeliaSim* -maxdepth 1 \( -type f -o -type l \) | sort
+
+Expected:
+- folder:
+  ~/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04
+- launcher:
+  ~/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04/coppeliaSim.sh
+
+Very good sign:
+- this folder also contained:
+  libsimExtROSInterface.so
+
+Why that matters:
+That means the ROS interface plugin is present in the simulator build.
+
+Troubleshooting for this section:
+- If tar says permission denied on the download, run:
+  chmod +r ~/Downloads/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04.tar.xz
+  then extract again
+- If no coppeliaSim.sh is present, you probably downloaded the wrong package
+
+==================================================
+STEP 10 - TERMINAL 1 - VERIFY COPPELIASIM STARTS
+==================================================
+
+Run:
+
+cd ~/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04
+./coppeliaSim.sh
+
+Expected:
+- the CoppeliaSim window opens
+- terminal stays occupied while it runs
+
+Troubleshooting for this section:
+- If it crashes immediately, read the terminal output for missing library messages.
+- If the window opens, this step is done.
+- Close it again only when the guide tells you to.
+
+==================================================
+STEP 11 - TERMINAL 2 - START ROS MASTER
+==================================================
+
+Open TERMINAL 2 and run:
+
+source /opt/ros/kinetic/setup.bash
+roscore
+
+Expected:
+- roscore starts
+- terminal remains busy
+- you should leave it open
+
+Why:
+Lab 3 requires roscore first, then simulator, then RViz.
+
+Troubleshooting for this section:
+- If roscore says command not found, source ROS Kinetic again.
+- If roscore cannot start because another ROS master is already running, either use the existing one or stop it first.
+
+Keep Terminal 2 open.
+Do NOT close it.
+
+==================================================
+STEP 12 - TERMINAL 1 - START COPPELIASIM AGAIN
+==================================================
+
+Run:
+
+cd ~/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04
+./coppeliaSim.sh
+
+Expected:
+- CoppeliaSim opens again
+
+Keep Terminal 1 open.
+Do NOT close it while the simulator is running.
+
+==================================================
+STEP 13 - COPPELIASIM WINDOW - LOAD THE E-PUCK MODEL
+==================================================
+
+In the CoppeliaSim window:
+
+File -> Open model...
+
+Then select:
+
+/home/mario/epuck_vrep_ros/e-puck.ttm
+
+Expected:
+- e-puck model appears in the scene
+
+Warning we saw:
+compatibility fix in script ePuck@childScript ...
+
+This is normal here because:
+- the model was originally written with old CoppeliaSim/V-REP 3.04
+- we are running it in CoppeliaSim 4.1
+
+Troubleshooting for this section:
+- If the model does not load, confirm the file exists:
+  ls -lah ~/epuck_vrep_ros/e-puck.ttm
+- If you get a compatibility warning only, you can continue.
+- If you get a hard script error and the model does not appear, stop and inspect the console.
+
+==================================================
+STEP 14 - COPPELIASIM WINDOW - START THE SIMULATION
+==================================================
+
+Click the Play/Start Simulation button.
+
+Expected:
+- simulation starts
+- robot may stand still, which is normal until commands are sent
+
+Important confusion we had:
+At one point the console showed:
+- Simulation started
+- simulation stopping...
+- Simulation stopped.
+
+That turned out to be because the simulation had been manually stopped, not because it crashed.
+
+Troubleshooting for this section:
+- If it stops immediately, carefully check whether you clicked stop yourself.
+- If it truly stops on its own, watch the console for red errors or plugin/script failures.
+- If it keeps running, continue.
+
+==================================================
+STEP 15 - TERMINAL 3 - CHECK WHETHER THE ROS TOPICS EXIST
+==================================================
+
+Open TERMINAL 3 and run:
+
+source /opt/ros/kinetic/setup.bash
+rostopic list | grep ePuck
+
+Expected topics:
+- /ePuck0/camera
+- /ePuck0/cmd_led
+- /ePuck0/cmd_vel
+- /ePuck0/imu
+- /ePuck0/proximity0
+- /ePuck0/proximity1
+- /ePuck0/proximity2
+- /ePuck0/proximity3
+- /ePuck0/proximity4
+- /ePuck0/proximity5
+- /ePuck0/proximity6
+- /ePuck0/proximity7
+
+Important troubleshooting for this section:
+- If rostopic list returns nothing for ePuck, first make sure the simulation is actually running.
+- We once checked while the simulation was not running and got no topics.
+- When the simulation was running, the topics appeared correctly.
+- If the simulation is running and topics still do not appear, then inspect whether the ROS interface plugin loaded.
+
+Keep Terminal 3 open.
+
+==================================================
+STEP 16 - OPTIONAL PLUGIN CHECK IF NO TOPICS APPEAR
+==================================================
+
+Only do this if topics still do not show up while the simulation is running.
+
+In Terminal 1, relaunch CoppeliaSim with a saved log:
+
+cd ~/CoppeliaSim_Edu_V4_1_0_Ubuntu16_04
+./coppeliaSim.sh 2>&1 | tee ~/coppelia_ros_log.txt
+
+Then after launching and running the model, inspect the log:
+
+grep -Ei 'ROSInterface|simExtROSInterface|plugin|error|warning' ~/coppelia_ros_log.txt
+
+Why:
+This helps verify whether the simulator ROS plugin actually loaded.
+
+Troubleshooting:
+- We did not need this in the end because the real issue was only that the simulation was not running.
+- Use this section only if you truly have no topics with a running simulation.
+
+==================================================
+STEP 17 - TERMINAL 4 - OPEN RVIZ WITH THE LAB CONFIG
+==================================================
+
+Open TERMINAL 4 and run:
+
+source /opt/ros/kinetic/setup.bash
+rosrun rviz rviz -d ~/epuck_vrep_ros/vrep_single_epuck.rviz
+
+Expected:
+- RViz opens
+- robot-related displays, TF, sensor cones, and teleop panel appear
+
+Troubleshooting for this section:
+- If RViz says the config file is missing, confirm:
+  ls -lah ~/epuck_vrep_ros/vrep_single_epuck.rviz
+- If you accidentally use vp_single_epuck.rviz from the PDF and it does not exist, switch to:
+  vrep_single_epuck.rviz
+- If RViz opens but some displays are red, continue to the next troubleshooting section.
+
+Keep Terminal 4 open.
+
+==================================================
+STEP 18 - RVIZ - HANDLE TF_OLD_DATA WARNINGS
+==================================================
+
+What we saw:
+- TF_OLD_DATA warnings for frames like:
+  ePuck0/left_wheel
+  ePuck0/right_wheel
+  ePuck0/body_top
+
+What it means:
+- RViz/TF is receiving old timestamps compared with what it expects
+
+Why it likely happens here:
+- old e-puck model
+- newer simulator version
+- stale TF state from earlier runs
+
+What we tried:
+- clicking Reset in RViz
+- fully restarting roscore, CoppeliaSim, and RViz in the correct order
+
+Result:
+- the warnings could still appear
+
+Important decision:
+- we ignored the warnings because the actual lab behavior still worked:
+  - the robot moved
+  - the topics existed
+  - the sensor values changed near obstacles
+
+When you can ignore it:
+- if the robot is controllable
+- if the data updates
+- if RViz is still usable
+
+When you should NOT ignore it:
+- if the robot does not move
+- if all displays are frozen
+- if sensor values never change
+- if TF itself is unusable for the lab
+
+==================================================
+STEP 19 - RVIZ - TEST TELEOP CONTROL
+==================================================
+
+In RViz, use the Teleop square at the bottom-left.
+Drag slightly upward.
+
+Expected:
+- the robot moves in CoppeliaSim
+
+This is the key practical test that proves:
+- /ePuck0/cmd_vel is working
+- the robot can be controlled from RViz
+
+Troubleshooting for this section:
+- If the robot does not move, check:
+  1. is roscore running?
+  2. is the simulation running?
+  3. do ePuck topics exist?
+  4. does /ePuck0/cmd_vel exist?
+- If the robot moves perfectly fine, you can continue even if TF warnings remain.
+
+==================================================
+STEP 20 - TERMINAL 3 - CHECK PROXIMITY SENSOR OUTPUT
+==================================================
+
+Run:
+
+source /opt/ros/kinetic/setup.bash
+rostopic echo /ePuck0/proximity0
+
+Then move the robot toward a wall or obstacle.
+
+What we first observed:
+- the value stayed at about 0.05
+- only the timestamp changed
+
+Interpretation:
+- 0.05 was the max range
+- that means no object was detected within the useful range of that sensor
+
+Troubleshooting for this section:
+- If one sensor seems unchanged, that does NOT mean all sensors are broken.
+- The robot may be facing a direction where that specific sensor does not see the obstacle.
+- Test a different sensor and change the robot placement.
+
+==================================================
+STEP 21 - TERMINAL 3 + COPPELIASIM - TEST A BETTER SENSOR
+==================================================
+
+Stop the old echo with Ctrl+C.
+
+Then run:
+
+source /opt/ros/kinetic/setup.bash
+rostopic echo /ePuck0/proximity2
+
+In CoppeliaSim:
+- stop or pause the simulation
+- place the robot with the front-side sensor close to the wall
+- restart the simulation
+
+What we observed:
+- /ePuck0/proximity2 changed from about 0.05 to about 0.011
+
+Interpretation:
+- the sensor was detecting the nearby wall correctly
+
+This proved the assignment requirement:
+study the sensor values as the robot approaches obstacles
+
+Troubleshooting for this section:
+- If proximity0 does not change, try proximity2 or another front/side sensor.
+- Make sure the robot is actually very close to the wall.
+- Make sure the simulation is running while you echo the topic.
+
+==================================================
+STEP 22 - RVIZ - UNDERSTAND WHICH CONE BELONGS TO WHICH SENSOR
+==================================================
+
+In RViz, each cone belongs to a sensor frame/topic pair.
+
+Mapping rule:
+- frame ePuck0/base_prox0  <->  /ePuck0/proximity0
+- frame ePuck0/base_prox1  <->  /ePuck0/proximity1
+- ...
+- frame ePuck0/base_prox7  <->  /ePuck0/proximity7
+
+To make labels easier to read:
+- expand TF in Displays
+- enable Show Names
+- enable Show Axes
+- increase Marker Scale to about 0.15 or 0.2
+- zoom in with Move Camera
+
+Troubleshooting for this section:
+- If Prox0..Prox7 are red in RViz, that does not automatically mean the sensors are broken.
+- In our setup, even with red displays and TF warnings, the robot still moved and the sensor topic values still changed correctly.
+
+==================================================
+STEP 23 - SAVE A WORKING STATE CHECKPOINT
+==================================================
+
+Run:
+
+printf '%s\n' \
+'Lab 3 working state:' \
+'- Terminal 1: CoppeliaSim running with e-puck.ttm loaded' \
+'- Terminal 2: roscore running' \
+'- Terminal 3: ROS topic checks / rostopic echo' \
+'- Terminal 4: RViz with vrep_single_epuck.rviz' \
+'- Robot moves from RViz teleop' \
+'- /ePuck0/proximity2 changes near wall' \
+> ~/lab3_working_state.txt
+
+cat ~/lab3_working_state.txt
+
+Why:
+This gives you a simple checkpoint file proving you reached a working state.
+
+==================================================
+QUICK SUMMARY OF OPEN TERMINALS
+==================================================
+
+TERMINAL 1 = CoppeliaSim launcher
+TERMINAL 2 = roscore
+TERMINAL 3 = rostopic checks / sensor echo
+TERMINAL 4 = RViz
+
+Keep them open while demonstrating the lab.
+
+==================================================
+WHAT TO SHOW THE TEACHER
+==================================================
+
+1. Ubuntu 16.04 + ROS Kinetic environment works
+2. epuck_vrep_ros repo exists in ~/epuck_vrep_ros
+3. e-puck.ttm loads in CoppeliaSim
+4. simulation runs
+5. rostopic list shows the ePuck topics
+6. RViz opens with vrep_single_epuck.rviz
+7. robot moves from RViz Teleop
+8. proximity topic values change near a wall
+9. you understand that one unchanged sensor value at 0.05 can simply mean no detection
+10. you can identify or test individual sensors such as /ePuck0/proximity2
+
+==================================================
+IMPORTANT
+==================================================
+
+- Use ROS Kinetic commands, not Indigo or Noetic ones
+- Use Ubuntu 16.04
+- Use /home/mario/... paths, not /root/...
+- The simulator fallback used here is CoppeliaSim 4.1.0 Edu for Ubuntu 16.04
+- Some warnings are acceptable as long as the actual lab functions work
