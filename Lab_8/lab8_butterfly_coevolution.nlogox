@@ -1,65 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.3" snapToGrid="true">
   <code><![CDATA[breed [rabbits rabbit]
-breed [foxes fox]
+breed [zombie-rabbits zombie-rabbit]
 
 turtles-own [
   energy
-]
-
-patches-own [
-  grass?
+  strength
 ]
 
 to setup
   clear-all
-  set-default-shape rabbits "sheep"
-  set-default-shape foxes "wolf"
+  set-default-shape rabbits "rabbit"
+  set-default-shape zombie-rabbits "rabbit"
   setup-patches
   setup-rabbits
-  setup-foxes
   reset-ticks
+end
+
+to setup-rabbits
+  create-rabbits number-rabbits [
+    setxy random-xcor random-ycor
+    set heading random 360
+    set color gray
+    set size 1.2
+    set energy rabbit-starting-energy
+    set strength random-float max-initial-rabbit-strength
+  ]
+end
+
+to setup-patches
+  ask patches [ set pcolor green ]
+
+  if grass-ul? [ zombie-grass-ul ]
+  if grass-ur? [ zombie-grass-ur ]
+  if grass-ll? [ zombie-grass-ll ]
+  if grass-lr? [ zombie-grass-lr ]
+end
+
+to zombie-grass-ul
+  ask patch (round (min-pxcor / 2)) (round (max-pycor / 2)) [ set pcolor red ]
+end
+
+to zombie-grass-ur
+  ask patch (round (max-pxcor / 2)) (round (max-pycor / 2)) [ set pcolor red ]
+end
+
+to zombie-grass-ll
+  ask patch (round (min-pxcor / 2)) (round (min-pycor / 2)) [ set pcolor red ]
+end
+
+to zombie-grass-lr
+  ask patch (round (max-pxcor / 2)) (round (min-pycor / 2)) [ set pcolor red ]
 end
 
 to go
   if not any? turtles [ stop ]
   move-rabbits
-  move-foxes
+  move-zombie-rabbits
   feed-rabbits
-  feed-foxes
+  feed-zombie-rabbits
   reproduce-rabbits
-  reproduce-foxes
-  death
   grow-grass
+  death
   tick
   wait (1 / simulation-speed)
-end
-
-to setup-patches
-  ask patches [
-    set grass? true
-    set pcolor green
-  ]
-end
-
-to setup-rabbits
-  create-rabbits initial-number-rabbits [
-    setxy random-xcor random-ycor
-    set heading random 360
-    set color white
-    set size 1.2
-    set energy rabbit-initial-energy
-  ]
-end
-
-to setup-foxes
-  create-foxes initial-number-foxes [
-    setxy random-xcor random-ycor
-    set heading random 360
-    set color orange
-    set size 1.4
-    set energy fox-initial-energy
-  ]
 end
 
 to move-rabbits
@@ -67,150 +71,205 @@ to move-rabbits
     right random 50
     left random 50
     forward 1
-    set energy energy - rabbit-move-cost
+    set energy energy - rabbit-loss-move
   ]
 end
 
-to move-foxes
-  ask foxes [
-    right random 50
-    left random 50
+to move-zombie-rabbits
+  ask zombie-rabbits [
+    let target one-of rabbits in-radius zombie-vision-radius
+    ifelse target != nobody [
+      face target
+    ] [
+      right random 50
+      left random 50
+    ]
     forward 1
-    set energy energy - fox-move-cost
+    set energy energy - zombie-rabbit-loss-move
   ]
 end
 
 to feed-rabbits
   ask rabbits [
-    if [grass?] of patch-here [
-      set energy energy + rabbits-gain-on-feed
-      ask patch-here [
-        set grass? false
-        set pcolor black
-      ]
+    if pcolor = green [
+      set energy energy + rabbit-gain-feed
+      set pcolor brown
+    ]
+
+    if pcolor = red [
+      ;; rabbit becomes a zombie after eating infected grass
+      set breed zombie-rabbits
+      set color magenta
+      set size 1.3
+      zombie-mutation
     ]
   ]
 end
 
-to feed-foxes
-  ask foxes [
+to feed-zombie-rabbits
+  ask zombie-rabbits [
     let prey one-of rabbits-here
     if prey != nobody [
-      ask prey [ die ]
-      set energy energy + foxes-gain-on-feed
+      let rabbit-wins? winner? ([strength] of prey) strength
+      ifelse rabbit-wins? [
+        die
+      ] [
+        set energy energy + zombie-rabbit-gain-feed
+        let parent-strength strength
+        ask prey [
+          set breed zombie-rabbits
+          set color magenta
+          set size 1.3
+          set energy zombie-rabbit-starting-energy
+          set strength parent-strength
+          zombie-mutation
+        ]
+      ]
     ]
   ]
 end
 
 to reproduce-rabbits
   ask rabbits [
-    if random 100 < rabbit-reproduction-chance [
+    if random 100 < rabbit-reprod-prob [
       set energy energy / 2
       hatch-rabbits 1 [
         set energy [energy] of myself
+        set strength [strength] of myself
+        rabbit-mutation
         right random 360
         forward 1
       ]
     ]
-  ]
-end
-
-to reproduce-foxes
-  ask foxes [
-    if random 100 < fox-reproduction-chance [
-      set energy energy / 2
-      hatch-foxes 1 [
-        set energy [energy] of myself
-        right random 360
-        forward 1
-      ]
-    ]
-  ]
-end
-
-to death
-  ask turtles [
-    if energy <= 0 [ die ]
   ]
 end
 
 to grow-grass
-  ask patches with [not grass?] [
-    if any? neighbors with [grass?] [
-      if random 100 < grass-regrowth-probability [
-        set grass? true
-        set pcolor green
-      ]
-    ]
+  ask patches with [pcolor = brown] [
+    if random 100 < grass-regrowth-prob [ set pcolor green ]
+  ]
+end
+
+to death
+  ask turtles with [energy <= 0] [ die ]
+end
+
+to rabbit-mutation
+  if random 100 < rabbit-mutation-rate [
+    set strength strength - rabbit-mutation-ampl + rabbit-mutation-ampl * random-float 2
+    if strength < 0 [ set strength 0 ]
+  ]
+end
+
+to zombie-mutation
+  if random 100 < zombie-mutation-rate [
+    set strength strength - zombie-mutation-ampl + zombie-mutation-ampl * random-float 2
+    if strength < 0 [ set strength 0 ]
+  ]
+end
+
+;; true = rabbit wins, false = zombie wins
+to-report winner? [rabbit-strength zombie-strength]
+  let delta-proto rabbit-strength - zombie-strength
+  let delta abs delta-proto
+
+  if delta-for-guaranteed-win <= 0 [
+    report rabbit-strength >= zombie-strength
   ]
 
-  let random-empty-patch one-of patches with [not grass?]
-  if random-empty-patch != nobody [
-    ask random-empty-patch [
-      set grass? true
-      set pcolor green
-    ]
+  if delta >= delta-for-guaranteed-win [
+    report rabbit-strength > zombie-strength
   ]
+
+  ;; Probabilistic result biased toward the stronger agent.
+  ;; If strengths are equal, rabbit has about 50% chance.
+  let rabbit-win-prob 0.5 + (delta-proto / delta-for-guaranteed-win) * 0.5
+  if rabbit-win-prob < 0 [ set rabbit-win-prob 0 ]
+  if rabbit-win-prob > 1 [ set rabbit-win-prob 1 ]
+  report random-float 1 < rabbit-win-prob
 end
 ]]></code>
   <widgets>
-    <view x="870" wrappingAllowedX="true" y="80" frameRate="30.0" minPycor="-16" height="549" showTickCounter="true" patchSize="16.52" fontSize="10" wrappingAllowedY="true" width="549" tickCounterLabel="ticks" maxPycor="16" updateMode="0" maxPxcor="16" minPxcor="-16"></view>
-    <button x="20" y="35" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="80" display="setup">setup</button>
-    <button x="110" y="35" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="80" display="go">go</button>
-    <slider x="20" step="1" y="95" max="500" width="270" display="initial-number-rabbits" height="50" min="0" direction="Horizontal" default="120.0" variable="initial-number-rabbits"></slider>
-    <slider x="20" step="1" y="150" max="200" width="270" display="initial-number-foxes" height="50" min="0" direction="Horizontal" default="40.0" variable="initial-number-foxes"></slider>
-    <slider x="20" step="1" y="205" max="100" width="270" display="rabbit-initial-energy" height="50" min="0" direction="Horizontal" default="20.0" variable="rabbit-initial-energy"></slider>
-    <slider x="20" step="1" y="260" max="100" width="270" display="fox-initial-energy" height="50" min="0" direction="Horizontal" default="30.0" variable="fox-initial-energy"></slider>
-    <slider x="20" step="0.1" y="315" max="5" width="270" display="rabbit-move-cost" height="50" min="0" direction="Horizontal" default="1.0" variable="rabbit-move-cost"></slider>
-    <slider x="20" step="0.1" y="370" max="5" width="270" display="fox-move-cost" height="50" min="0" direction="Horizontal" default="1.5" variable="fox-move-cost"></slider>
-    <slider x="20" step="1" y="425" max="100" width="270" display="rabbit-reproduction-chance" height="50" min="0" direction="Horizontal" default="4.0" variable="rabbit-reproduction-chance"></slider>
-    <slider x="20" step="1" y="480" max="100" width="270" display="fox-reproduction-chance" height="50" min="0" direction="Horizontal" default="3.0" variable="fox-reproduction-chance"></slider>
-    <slider x="300" step="1" y="95" max="50" width="150" display="rabbits-gain-on-feed" height="50" min="0" direction="Horizontal" default="8.0" variable="rabbits-gain-on-feed"></slider>
-    <slider x="300" step="1" y="150" max="100" width="150" display="foxes-gain-on-feed" height="50" min="0" direction="Horizontal" default="20.0" variable="foxes-gain-on-feed"></slider>
-    <slider x="300" step="1" y="205" max="100" width="150" display="grass-regrowth-probability" height="50" min="0" direction="Horizontal" default="5.0" variable="grass-regrowth-probability"></slider>
-    <slider x="300" step="1" y="260" max="20" width="150" display="simulation-speed" height="50" min="1" direction="Horizontal" default="10.0" variable="simulation-speed"></slider>
-    <plot x="455" autoPlotX="true" yMax="50.0" autoPlotY="true" y="75" xMin="0.0" height="230" legend="true" xMax="10.0" yMin="0.0" width="360" display="Average Energy">
-      <setup></setup>
-      <update></update>
-      <pen interval="1.0" mode="0" display="rabbits" color="-16645118" legend="true">
-        <setup></setup>
-        <update>plot ifelse-value any? rabbits [mean [energy] of rabbits] [0]</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="foxes" color="-2674135" legend="true">
-        <setup></setup>
-        <update>plot ifelse-value any? foxes [mean [energy] of foxes] [0]</update>
-      </pen>
-    </plot>
-    <plot x="455" autoPlotX="true" yMax="200.0" autoPlotY="true" y="320" xMin="0.0" height="250" legend="true" xMax="10.0" yMin="0.0" width="360" display="Population">
-      <setup></setup>
-      <update></update>
-      <pen interval="1.0" mode="0" display="rabbits" color="-16777216" legend="true">
-        <setup></setup>
-        <update>plot count rabbits</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="foxes" color="-2674135" legend="true">
-        <setup></setup>
-        <update>plot count foxes</update>
-      </pen>
-    </plot>
-    <monitor x="455" precision="0" y="585" height="60" fontSize="11" width="105" display="rabbits">count rabbits</monitor>
-    <monitor x="580" precision="2" y="585" height="60" fontSize="11" width="145" display="avg rabbit energy">ifelse-value any? rabbits [mean [energy] of rabbits] [0]</monitor>
-    <monitor x="740" precision="0" y="585" height="60" fontSize="11" width="105" display="foxes">count foxes</monitor>
-    <monitor x="455" precision="2" y="660" height="60" fontSize="11" width="145" display="avg fox energy">ifelse-value any? foxes [mean [energy] of foxes] [0]</monitor>
-    <monitor x="615" precision="0" y="660" height="60" fontSize="11" width="105" display="grass">count patches with [grass?]</monitor>
-  </widgets>
-  <info>## WHAT IS IT?
+    <view x="430" y="30" width="550" height="550" patchSize="16.6" minPxcor="-16" maxPxcor="16" minPycor="-16" maxPycor="16" wrappingAllowedX="true" wrappingAllowedY="true" frameRate="30.0" showTickCounter="true" tickCounterLabel="ticks" updateMode="0" fontSize="10"></view>
+    <button x="20" y="25" width="80" height="40" display="setup" kind="Observer" forever="false" disableUntilTicks="false">setup</button>
+    <button x="110" y="25" width="80" height="40" display="go" kind="Observer" forever="true" disableUntilTicks="false">go</button>
 
-RIA Lab 5 / Lab 2-IA Part II: Simple Navigation. This extends Part I with uneven food distribution, nutrient-rich food, and guided movement using a limited field of view.
+    <slider x="20" y="85" width="190" height="50" display="number-rabbits" variable="number-rabbits" min="0" max="300" default="100.0" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="140" width="190" height="50" display="rabbit-starting-energy" variable="rabbit-starting-energy" min="0" max="100" default="50.0" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="195" width="190" height="50" display="rabbit-reprod-prob" variable="rabbit-reprod-prob" min="0" max="100" default="30.0" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="250" width="190" height="50" display="rabbit-gain-feed" variable="rabbit-gain-feed" min="0" max="100" default="14.0" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="305" width="190" height="50" display="rabbit-loss-move" variable="rabbit-loss-move" min="0" max="10" default="4.0" step="0.1" direction="Horizontal"></slider>
+    <slider x="20" y="360" width="190" height="50" display="grass-regrowth-prob" variable="grass-regrowth-prob" min="0" max="100" default="50.0" step="1" direction="Horizontal"></slider>
+
+    <slider x="225" y="85" width="190" height="50" display="zombie-rabbit-starting-energy" variable="zombie-rabbit-starting-energy" min="0" max="100" default="40.0" step="1" direction="Horizontal"></slider>
+    <slider x="225" y="140" width="190" height="50" display="zombie-rabbit-gain-feed" variable="zombie-rabbit-gain-feed" min="0" max="100" default="17.0" step="1" direction="Horizontal"></slider>
+    <slider x="225" y="195" width="190" height="50" display="zombie-rabbit-loss-move" variable="zombie-rabbit-loss-move" min="0" max="20" default="7.0" step="0.1" direction="Horizontal"></slider>
+    <slider x="225" y="250" width="190" height="50" display="zombie-vision-radius" variable="zombie-vision-radius" min="1" max="20" default="6.0" step="1" direction="Horizontal"></slider>
+    <slider x="225" y="305" width="190" height="50" display="simulation-speed" variable="simulation-speed" min="1" max="30" default="10.0" step="1" direction="Horizontal"></slider>
+
+    <slider x="20" y="435" width="190" height="50" display="max-initial-rabbit-strength" variable="max-initial-rabbit-strength" min="0" max="10" default="3.0" step="0.1" direction="Horizontal"></slider>
+    <slider x="20" y="490" width="190" height="50" display="rabbit-mutation-rate" variable="rabbit-mutation-rate" min="0" max="100" default="10.0" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="545" width="190" height="50" display="rabbit-mutation-ampl" variable="rabbit-mutation-ampl" min="0" max="1" default="0.2" step="0.05" direction="Horizontal"></slider>
+    <slider x="225" y="435" width="190" height="50" display="zombie-mutation-rate" variable="zombie-mutation-rate" min="0" max="100" default="10.0" step="1" direction="Horizontal"></slider>
+    <slider x="225" y="490" width="190" height="50" display="zombie-mutation-ampl" variable="zombie-mutation-ampl" min="0" max="1" default="0.2" step="0.05" direction="Horizontal"></slider>
+    <slider x="225" y="545" width="190" height="50" display="delta-for-guaranteed-win" variable="delta-for-guaranteed-win" min="0" max="3" default="1.0" step="0.1" direction="Horizontal"></slider>
+
+    <switch x="20" y="615" width="95" height="35" display="grass-ul?" variable="grass-ul?" on="true"></switch>
+    <switch x="120" y="615" width="95" height="35" display="grass-ur?" variable="grass-ur?" on="true"></switch>
+    <switch x="220" y="615" width="95" height="35" display="grass-ll?" variable="grass-ll?" on="true"></switch>
+    <switch x="320" y="615" width="95" height="35" display="grass-lr?" variable="grass-lr?" on="true"></switch>
+
+    <monitor x="1000" y="30" width="105" height="55" display="rabbits" precision="0" fontSize="11">count rabbits</monitor>
+    <monitor x="1115" y="30" width="105" height="55" display="zombies" precision="0" fontSize="11">count zombie-rabbits</monitor>
+    <monitor x="1230" y="30" width="115" height="55" display="infected grass" precision="0" fontSize="11">count patches with [pcolor = red]</monitor>
+    <monitor x="1000" y="95" width="160" height="55" display="mean rabbit strength" precision="2" fontSize="11">ifelse-value any? rabbits [mean [strength] of rabbits] [0]</monitor>
+    <monitor x="1170" y="95" width="170" height="55" display="mean zombie strength" precision="2" fontSize="11">ifelse-value any? zombie-rabbits [mean [strength] of zombie-rabbits] [0]</monitor>
+
+    <plot x="1000" y="170" width="360" height="210" display="Population" xMin="0.0" xMax="10.0" yMin="0.0" yMax="200.0" autoPlotX="true" autoPlotY="true" legend="true">
+      <setup></setup><update></update>
+      <pen display="rabbits" interval="1.0" mode="0" color="-7500403" legend="true"><setup></setup><update>plot count rabbits</update></pen>
+      <pen display="zombies" interval="1.0" mode="0" color="-5825686" legend="true"><setup></setup><update>plot count zombie-rabbits</update></pen>
+    </plot>
+
+    <plot x="1000" y="395" width="360" height="210" display="Mean strength" xMin="0.0" xMax="10.0" yMin="0.0" yMax="5.0" autoPlotX="true" autoPlotY="true" legend="true">
+      <setup></setup><update></update>
+      <pen display="rabbits" interval="1.0" mode="0" color="-7500403" legend="true"><setup></setup><update>plot ifelse-value any? rabbits [mean [strength] of rabbits] [0]</update></pen>
+      <pen display="zombies" interval="1.0" mode="0" color="-5825686" legend="true"><setup></setup><update>plot ifelse-value any? zombie-rabbits [mean [strength] of zombie-rabbits] [0]</update></pen>
+    </plot>
+
+    <plot x="1000" y="620" width="360" height="210" display="Strength histogram" xMin="0.0" xMax="10.0" yMin="0.0" yMax="10.0" autoPlotX="false" autoPlotY="true" legend="true">
+      <setup></setup><update></update>
+      <pen display="rabbits" interval="0.1" mode="1" color="-7500403" legend="true"><setup></setup><update>histogram [strength] of rabbits</update></pen>
+      <pen display="zombies" interval="0.1" mode="1" color="-5825686" legend="true"><setup></setup><update>histogram [strength] of zombie-rabbits</update></pen>
+    </plot>
+  </widgets>
+  <info><![CDATA[## WHAT IS IT?
+
+A NetLogo model for Lab 5 / RIA Lab 8: butterfly effect and co-evolution.
+Rabbits eat grass. If they eat red infected grass, they become zombie-rabbits. Zombie-rabbits chase rabbits and attempt to infect them.
+
+## HOW IT WORKS
+
+Rabbits have energy and strength. Rabbits lose energy when moving, gain energy from green grass, reproduce probabilistically, and die when energy reaches zero.
+
+Zombie-rabbits have energy and strength. They lose energy while moving and gain energy when they defeat a rabbit. If the rabbit wins the strength battle, the zombie dies. If the zombie wins, the rabbit becomes a zombie and inherits the zombie parent's strength, followed by mutation.
+
+The four grass switches choose which quadrant receives an infected red patch during setup.
 
 ## HOW TO USE IT
 
-Press setup, then go. Green patches are normal food; lime patches are nutrient-rich food; black patches are regenerating.
+Set the sliders, turn quadrant switches on/off, press setup, then go.
 
-When guided-movement? is on, turtles search inside a cone controlled by vision-radius and vision-angle, then face the best visible food patch.
+Important sliders:
+- max-initial-rabbit-strength: random upper limit for rabbit strength at setup.
+- rabbit/zombie mutation rate: probability of mutation.
+- rabbit/zombie mutation ampl: maximum mutation size.
+- delta-for-guaranteed-win: how large a strength gap is needed for guaranteed victory.
 
-The simulation-speed slider controls the delay between ticks: higher = faster, lower = slower.
-</info>
+## THINGS TO NOTICE
+
+Small changes in initial infected grass placement or mutation parameters can produce different long-term outcomes: rabbit survival, zombie dominance, collapse, or fluctuating equilibrium.
+]]></info>
   <turtleShapes>
     <shape name="default" rotatable="true" editableColorIndex="0">
       <polygon color="-1920102913" filled="true" marked="true">

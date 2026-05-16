@@ -1,0 +1,608 @@
+breed [humans human]
+breed [fire-alarms fire-alarm]
+breed [fire-sensors fire-sensor]
+breed [controllers controller]
+breed [fire-extinguishers fire-extinguisher]
+breed [rescue-robots rescue-robot]
+
+humans-own [
+  behavior              ;; 0 = stands still before alarm, 1 = moves randomly before alarm
+  following-robot?
+]
+
+fire-alarms-own [
+  monitored-room
+  sounding?
+]
+
+fire-sensors-own [
+  monitored-room
+  detected-fire?
+]
+
+fire-extinguishers-own [
+  monitored-room
+  active?
+]
+
+rescue-robots-own [
+  returning-to-exit?
+  target-human
+]
+
+patches-own [
+  exit-value
+  human-value
+  wall?
+  exit?
+  office?
+  meeting?
+  corridor?
+  burning?
+  room-id
+  base-color
+]
+
+globals [
+  dead
+  saved
+  robots-lost
+  fire-started?
+  alarm-triggered?
+  robots-deployed?
+]
+
+to setup
+  clear-all
+  set dead 0
+  set saved 0
+  set robots-lost 0
+  set fire-started? false
+  set alarm-triggered? false
+  set robots-deployed? false
+
+  set-default-shape humans "person"
+  set-default-shape fire-alarms "circle"
+  set-default-shape fire-sensors "triangle"
+  set-default-shape controllers "square"
+  set-default-shape fire-extinguishers "cylinder"
+  set-default-shape rescue-robots "car"
+
+  load-patches
+  classify-patches
+  place-monitoring-agents
+  place-fire-extinguishers
+  place-humans
+  update-exit-field
+
+  reset-ticks
+end
+
+to load-patches
+  ifelse file-exists? "floor.bmp" [
+    import-pcolors "floor.bmp"
+  ] [
+    draw-fallback-floor
+  ]
+end
+
+to draw-fallback-floor
+  ask patches [ set pcolor 5 ]
+  ask patches with [pxcor = min-pxcor or pxcor = max-pxcor or pycor = min-pycor or pycor = max-pycor] [ set pcolor 0 ]
+  ask patches with [pxcor = 15 or pycor = 15] [ set pcolor 0 ]
+  ask patches with [pxcor < 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor > 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor < 15 and pycor < 15] [ set pcolor 115.3 ]
+  ask patches with [pxcor > 15 and pycor < 15] [ set pcolor 105 ]
+  ask patches with [pxcor = min-pxcor and pycor = 5] [ set pcolor 64.5 ]
+  ask patches with [pxcor = max-pxcor and pycor = 26] [ set pcolor 64.5 ]
+end
+
+to classify-patches
+  ask patches [
+    set base-color pcolor
+    set burning? false
+    set exit-value 0
+    set wall? (pcolor = 0)
+    set exit? (pcolor = 64.5)
+    set office? (pcolor = 105)
+    set meeting? (pcolor = 115.3)
+    set corridor? (not wall? and not exit? and not office? and not meeting?)
+    set room-id -1
+
+    ;; Dynamic enough for the provided floor plan: rooms are separated by wall lines/quadrants.
+    if office? or meeting? [
+      if pxcor < 16 and pycor >= 16 [ set room-id 1 ]
+      if pxcor >= 16 and pycor >= 16 [ set room-id 2 ]
+      if pxcor < 16 and pycor < 16 [ set room-id 3 ]
+      if pxcor >= 16 and pycor < 16 [ set room-id 4 ]
+    ]
+  ]
+end
+
+to place-monitoring-agents
+  let rooms remove-duplicates [room-id] of patches with [room-id > 0]
+
+  foreach rooms [ r ->
+    let room-patches patches with [room-id = r]
+    if any? room-patches [
+      create-fire-sensors 1 [
+        move-to one-of room-patches
+        set monitored-room r
+        set detected-fire? false
+        set color cyan
+        set size 1.2
+        set label "S"
+      ]
+
+      create-fire-alarms 1 [
+        move-to max-one-of room-patches [pxcor + pycor]
+        set monitored-room r
+        set sounding? false
+        set color blue
+        set size 1.2
+        set label "A"
+      ]
+    ]
+  ]
+
+  let controller-patch one-of patches with [wall?]
+  if controller-patch = nobody [ set controller-patch patch 0 0 ]
+  create-controllers 1 [
+    move-to controller-patch
+    set color yellow
+    set size 1.4
+    set label "CTRL"
+  ]
+end
+
+to place-fire-extinguishers
+  let rooms remove-duplicates [room-id] of patches with [room-id > 0]
+
+  foreach rooms [ r ->
+    let room-patches patches with [room-id = r]
+    if any? room-patches [
+      ;; One extinguisher in small rooms, two in larger rooms.
+      let amount 1
+      if count room-patches > 80 [ set amount 2 ]
+
+      create-fire-extinguishers amount [
+        move-to one-of room-patches
+        set monitored-room r
+        set active? false
+        set color gray
+        set size 1.1
+        set label "E"
+      ]
+    ]
+  ]
+end
+
+to place-humans
+  create-humans number-humans [
+    set heading random 360
+    set behavior random 2
+    set following-robot? false
+    set color white
+    set size 1
+
+    let valid-patches patches with [not wall? and not exit? and not burning?]
+    if any? valid-patches [ move-to one-of valid-patches ]
+  ]
+end
+
+to go
+  if simulation-speed > 0 [ wait (1 / simulation-speed) ]
+
+  spread-fire
+  update-fire-sensors
+  update-controller
+  sync-rescue-robot-switch
+  activate-control-systems
+
+  death-humans
+  death-rescue-robots
+  update-exit-field
+  update-human-field
+
+  move-rescue-robots
+  death-rescue-robots
+  move-humans
+
+  death-humans
+  process-exits
+  tick
+end
+
+to fire-offices
+  let candidates patches with [office? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
+  ]
+end
+
+to fire-conference
+  let candidates patches with [meeting? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
+  ]
+end
+
+to alarm-test
+  set alarm-triggered? true
+  ask fire-alarms [
+    set sounding? true
+    set color red
+    set label "!"
+  ]
+  ask controllers [
+    set color red
+    set label "ALARM"
+  ]
+end
+
+to robot-test
+  set alarm-triggered? true
+  set use-rescue-robots? true
+  deploy-rescue-robots
+end
+
+to ignite
+  set burning? true
+  set pcolor red
+end
+
+to spread-fire
+  if fire-started? [
+    ask patches with [burning?] [
+      if random-float 100 < fire-spread-probability [
+        let targets neighbors4 with [not wall? and not exit? and not burning?]
+        if any? targets [ ask one-of targets [ ignite ] ]
+      ]
+    ]
+  ]
+end
+
+to update-fire-sensors
+  ask fire-sensors [
+    let r monitored-room
+    ifelse any? patches with [room-id = r and burning?] [
+      set detected-fire? true
+      set color red
+      set label "FIRE"
+    ] [
+      set detected-fire? false
+      set color cyan
+      set label "S"
+    ]
+  ]
+end
+
+to update-controller
+  if any? fire-sensors with [detected-fire?] [
+    set alarm-triggered? true
+  ]
+
+  ask controllers [
+    ifelse alarm-triggered? [
+      set color red
+      set label "ALARM"
+    ] [
+      set color yellow
+      set label "CTRL"
+    ]
+  ]
+
+  ask fire-alarms [
+    ifelse alarm-triggered? [
+      set sounding? true
+      set color red
+      set label "!"
+    ] [
+      set sounding? false
+      set color blue
+      set label "A"
+    ]
+  ]
+end
+
+
+to sync-rescue-robot-switch
+  ;; If the robot solution is turned off, remove active robots and fully reset
+  ;; robot-following state. This prevents old robots from staying on the map
+  ;; and confusing humans when the switch is turned on again later.
+  if not use-rescue-robots? [
+    if any? rescue-robots [ ask rescue-robots [ die ] ]
+    set robots-deployed? false
+    ask humans [
+      set following-robot? false
+      set color white
+    ]
+  ]
+end
+
+to activate-control-systems
+  if alarm-triggered? [
+    if use-fire-extinguishers? [ activate-fire-extinguishers ]
+    if use-rescue-robots? [ deploy-rescue-robots ]
+  ]
+end
+
+to activate-fire-extinguishers
+  ask fire-extinguishers [
+    set active? true
+    set color orange
+    set label "ON"
+
+    ask patches in-radius extinguisher-radius with [burning?] [
+      set burning? false
+      set pcolor base-color
+    ]
+  ]
+end
+
+to deploy-rescue-robots
+  if not robots-deployed? [
+    let exits patches with [exit?]
+    if any? exits [
+      ask exits [
+        sprout-rescue-robots 1 [
+          set color violet
+          set size 1.4
+          set label "R"
+          set returning-to-exit? false
+          set target-human nobody
+        ]
+      ]
+      set robots-deployed? true
+    ]
+  ]
+end
+
+to update-exit-field
+  ask patches [ set exit-value 0 ]
+  ask patches with [exit?] [ set exit-value 1000 ]
+
+  repeat 12 [
+    diffuse exit-value 0.75
+    ask patches with [wall? or burning?] [ set exit-value 0 ]
+    ask patches with [exit?] [ set exit-value 1000 ]
+  ]
+end
+
+to update-human-field
+  ;; Navigation field used by rescue robots while searching.
+  ;; High values flow outward from humans, but not through walls or fire.
+  ask patches [ set human-value 0 ]
+  ask humans [ ask patch-here [ set human-value 1000 ] ]
+
+  repeat 18 [
+    diffuse human-value 0.75
+    ask patches with [wall? or burning?] [ set human-value 0 ]
+    ask humans [ ask patch-here [ set human-value 1000 ] ]
+  ]
+end
+
+to move-rescue-robots
+  if not use-rescue-robots? [ stop ]
+
+  ;; Reassign targets every tick, but do not let several robots claim the
+  ;; same person. Robots with no available target return to an exit instead
+  ;; of piling onto the same human.
+  assign-robot-targets
+
+  ask rescue-robots [
+    ;; If there are no people left, go back to an exit and wait.
+    if not any? humans [
+      set target-human nobody
+      set returning-to-exit? true
+    ]
+
+    ;; A robot that has no unique person target should wait/return at an exit.
+    if target-human = nobody [
+      set returning-to-exit? true
+    ]
+
+    ;; Once a robot reaches the area of its assigned person, it returns to the
+    ;; exit. Nearby people that see it will follow the exit field.
+    if target-human != nobody and distance target-human <= 2 [
+      set returning-to-exit? true
+    ]
+
+    ifelse returning-to-exit? [
+      robot-step-to-exit
+
+      ;; When the robot has reached an exit and there are still humans, it can
+      ;; leave again on the next tick with a fresh target.
+      if [exit?] of patch-here and any? humans [
+        set returning-to-exit? false
+        set target-human nobody
+      ]
+    ] [
+      robot-step-to-human
+    ]
+  ]
+end
+
+to assign-robot-targets
+  ;; Keep valid targets, remove targets that disappeared.
+  ask rescue-robots [
+    if target-human != nobody [
+      if not member? target-human sort humans [
+        set target-human nobody
+      ]
+    ]
+  ]
+
+  ;; Robots that are searching choose a human not already claimed by another
+  ;; robot. If none is available, that robot goes back to an exit.
+  ask rescue-robots with [not returning-to-exit?] [
+    let claimed [target-human] of other rescue-robots with [target-human != nobody]
+    let candidates humans with [not member? self claimed]
+
+    ifelse any? candidates [
+      set target-human min-one-of candidates [distance myself]
+    ] [
+      set target-human nobody
+      set returning-to-exit? true
+    ]
+  ]
+end
+
+to robot-step-to-human
+  if target-human = nobody [
+    set returning-to-exit? true
+    robot-step-to-exit
+    stop
+  ]
+
+  let options neighbors4 with [not wall? and not burning? and not any? rescue-robots-here]
+  if not any? options [
+    set options neighbors4 with [not wall? and not burning?]
+  ]
+
+  if any? options [
+    let t target-human
+
+    ;; This hybrid score prevents robots from freezing at doors/corners.
+    ;; human-value guides them through corridors, distance keeps them focused
+    ;; on their assigned person, and the robot penalty keeps them separated.
+    let best max-one-of options [
+      human-value - (2 * distance t) - (15 * count rescue-robots-on self)
+    ]
+    move-to best
+  ]
+end
+
+to robot-step-to-exit
+  let options neighbors4 with [not wall? and not burning? and not any? rescue-robots-here]
+  if not any? options [
+    set options neighbors4 with [not wall? and not burning?]
+  ]
+
+  if any? options [
+    let best max-one-of options [exit-value - (10 * count rescue-robots-on self)]
+
+    ;; If already at an exit/local maximum, do not freeze the whole system.
+    ;; The next tick will either assign a target or keep this robot waiting.
+    ifelse [exit?] of patch-here [
+      if target-human != nobody [ move-to best ]
+    ] [
+      move-to best
+    ]
+  ]
+end
+
+to move-humans
+  ask humans [
+    set following-robot? false
+
+    ifelse alarm-triggered? [
+      ;; If robots are disabled, people must ignore existing robots completely.
+      ifelse use-rescue-robots? [
+        let visible-robot nearest-visible-robot
+        ifelse visible-robot != nobody [
+          set following-robot? true
+          set color sky
+          follow-robot visible-robot
+        ] [
+          set color white
+          evacuate
+        ]
+      ] [
+        set color white
+        evacuate
+      ]
+    ] [
+      if behavior = 1 [ random-human-move ]
+    ]
+  ]
+end
+
+to-report nearest-visible-robot
+  let target nobody
+  let best-distance 999999
+  let nearby rescue-robots in-radius human-robot-vision
+
+  foreach sort nearby [ r ->
+    if can-see-robot? r [
+      let d distance r
+      if d < best-distance [
+        set best-distance d
+        set target r
+      ]
+    ]
+  ]
+
+  report target
+end
+
+to-report can-see-robot? [r]
+  ;; Distance alone allows people to "see" robots through walls.
+  ;; This line-of-sight check samples patches between the human and the robot
+  ;; and rejects visibility if a wall patch is between them.
+  if not use-rescue-robots? [ report false ]
+  if r = nobody [ report false ]
+  let dist distance r
+  if dist = 0 [ report true ]
+  if dist > human-robot-vision [ report false ]
+
+  let dir towards r
+  let step 0.5
+  let travelled step
+
+  while [travelled < dist] [
+    let p patch-at-heading-and-distance dir travelled
+    if p = nobody [ report false ]
+    if [wall?] of p [ report false ]
+    set travelled travelled + step
+  ]
+
+  report true
+end
+
+to follow-robot [target]
+  ;; A visible rescue robot acts as a guide/signal: the human should move
+  ;; toward the exit field, not physically stick to the robot forever.
+  ;; This also avoids bad behavior after toggling robots off/on.
+  ifelse target != nobody [
+    evacuate
+  ] [
+    evacuate
+  ]
+end
+
+to random-human-move
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [ move-to one-of options ]
+end
+
+to evacuate
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [
+    move-to max-one-of options [exit-value]
+  ]
+end
+
+to death-rescue-robots
+  ask rescue-robots with [[burning?] of patch-here] [
+    set robots-lost robots-lost + 1
+    die
+  ]
+end
+
+to death-humans
+  ask humans with [[burning?] of patch-here] [
+    set dead dead + 1
+    die
+  ]
+end
+
+to process-exits
+  ask humans with [[exit?] of patch-here] [
+    set saved saved + 1
+    die
+  ]
+end

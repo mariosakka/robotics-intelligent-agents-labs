@@ -1,216 +1,907 @@
 <?xml version="1.0" encoding="utf-8"?>
 <model version="NetLogo 7.0.3" snapToGrid="true">
-  <code><![CDATA[breed [rabbits rabbit]
-breed [foxes fox]
+  <code><![CDATA[breed [humans human]
+breed [fire-alarms fire-alarm]
+breed [fire-sensors fire-sensor]
+breed [controllers controller]
+breed [fire-extinguishers fire-extinguisher]
+breed [rescue-robots rescue-robot]
 
-turtles-own [
-  energy
+humans-own [
+  behavior              ;; 0 = stands still before alarm, 1 = moves randomly before alarm
+  following-robot?
+]
+
+fire-alarms-own [
+  monitored-room
+  sounding?
+]
+
+fire-sensors-own [
+  monitored-room
+  detected-fire?
+]
+
+fire-extinguishers-own [
+  monitored-room
+  active?
+]
+
+rescue-robots-own [
+  returning-to-exit?
+  target-human
+]
+
+controllers-own [
+  monitored-room
+  triggered?
+  failed?
 ]
 
 patches-own [
-  grass?
+  exit-value
+  human-value
+  wall?
+  exit?
+  office?
+  meeting?
+  corridor?
+  burning?
+  room-id
+  base-color
+]
+
+globals [
+  dead
+  saved
+  robots-lost
+  fire-started?
+  alarm-triggered?
+  robots-deployed?
 ]
 
 to setup
   clear-all
-  set-default-shape rabbits "sheep"
-  set-default-shape foxes "wolf"
-  setup-patches
-  setup-rabbits
-  setup-foxes
+  set dead 0
+  set saved 0
+  set robots-lost 0
+  set fire-started? false
+  set alarm-triggered? false
+  set robots-deployed? false
+
+  set-default-shape humans "person"
+  set-default-shape fire-alarms "circle"
+  set-default-shape fire-sensors "triangle"
+  set-default-shape controllers "square"
+  set-default-shape fire-extinguishers "cylinder"
+  set-default-shape rescue-robots "car"
+
+  load-patches
+  classify-patches
+  place-monitoring-agents
+  place-fire-extinguishers
+  place-humans
+  update-exit-field
+
   reset-ticks
 end
 
-to go
-  if not any? turtles [ stop ]
-  move-rabbits
-  move-foxes
-  feed-rabbits
-  feed-foxes
-  reproduce-rabbits
-  reproduce-foxes
-  death
-  grow-grass
-  tick
-  wait (1 / simulation-speed)
+to load-patches
+  ifelse file-exists? "floor.bmp" [
+    import-pcolors "floor.bmp"
+  ] [
+    draw-fallback-floor
+  ]
 end
 
-to setup-patches
+to draw-fallback-floor
+  ask patches [ set pcolor 5 ]
+  ask patches with [pxcor = min-pxcor or pxcor = max-pxcor or pycor = min-pycor or pycor = max-pycor] [ set pcolor 0 ]
+  ask patches with [pxcor = 15 or pycor = 15] [ set pcolor 0 ]
+  ask patches with [pxcor < 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor > 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor < 15 and pycor < 15] [ set pcolor 115.3 ]
+  ask patches with [pxcor > 15 and pycor < 15] [ set pcolor 105 ]
+  ask patches with [pxcor = min-pxcor and pycor = 5] [ set pcolor 64.5 ]
+  ask patches with [pxcor = max-pxcor and pycor = 26] [ set pcolor 64.5 ]
+end
+
+to classify-patches
   ask patches [
-    set grass? true
-    set pcolor green
+    set base-color pcolor
+    set burning? false
+    set exit-value 0
+    set wall? (pcolor = 0)
+    set exit? (pcolor = 64.5)
+    set office? (pcolor = 105)
+    set meeting? (pcolor = 115.3)
+    set corridor? (not wall? and not exit? and not office? and not meeting?)
+    set room-id -1
+
+    ;; Dynamic enough for the provided floor plan: rooms are separated by wall lines/quadrants.
+    if office? or meeting? [
+      if pxcor < 16 and pycor >= 16 [ set room-id 1 ]
+      if pxcor >= 16 and pycor >= 16 [ set room-id 2 ]
+      if pxcor < 16 and pycor < 16 [ set room-id 3 ]
+      if pxcor >= 16 and pycor < 16 [ set room-id 4 ]
+    ]
   ]
 end
 
-to setup-rabbits
-  create-rabbits initial-number-rabbits [
-    setxy random-xcor random-ycor
+to place-monitoring-agents
+  let rooms sort remove-duplicates [room-id] of patches with [room-id > 0]
+
+  ;; Every room has one fire sensor and one alarm.
+  foreach rooms [ r ->
+    let room-patches patches with [room-id = r]
+    if any? room-patches [
+      create-fire-sensors 1 [
+        move-to min-one-of room-patches [distancexy mean [pxcor] of room-patches mean [pycor] of room-patches]
+        set monitored-room r
+        set detected-fire? false
+        set color cyan
+        set size 1.2
+        set label "S"
+      ]
+
+      create-fire-alarms 1 [
+        move-to max-one-of room-patches [pxcor + pycor]
+        set monitored-room r
+        set sounding? false
+        set color blue
+        set size 1.2
+        set label "A"
+      ]
+    ]
+  ]
+
+  ;; Lab 12: choose centralized or decentralized controllers from the switch.
+  ;; Centralized: one wall controller for the whole floor.
+  ;; Decentralized: one local controller in each room.
+  ifelse decentralized-control? [
+    foreach rooms [ r ->
+      let room-patches patches with [room-id = r]
+      if any? room-patches [
+        create-controllers 1 [
+          move-to one-of room-patches
+          set monitored-room r
+          set triggered? false
+          set failed? false
+          set color violet
+          set size 1.35
+          set label word "C" r
+        ]
+      ]
+    ]
+  ] [
+    let controller-patch one-of patches with [wall?]
+    if controller-patch = nobody [ set controller-patch patch 0 0 ]
+    create-controllers 1 [
+      move-to controller-patch
+      set monitored-room 0
+      set triggered? false
+      set failed? false
+      set color yellow
+      set size 1.4
+      set label "CTRL"
+    ]
+  ]
+
+  if decentralized-control? and simulate-controller-failure? [
+    ask controllers with [monitored-room = controller-failure-room] [
+      set failed? true
+      set triggered? false
+      set color gray
+      set label "FAIL"
+    ]
+  ]
+end
+to place-fire-extinguishers
+  let rooms remove-duplicates [room-id] of patches with [room-id > 0]
+
+  foreach rooms [ r ->
+    let room-patches patches with [room-id = r]
+    if any? room-patches [
+      ;; One extinguisher in small rooms, two in larger rooms.
+      let amount 1
+      if count room-patches > 80 [ set amount 2 ]
+
+      create-fire-extinguishers amount [
+        move-to one-of room-patches
+        set monitored-room r
+        set active? false
+        set color gray
+        set size 1.1
+        set label "E"
+      ]
+    ]
+  ]
+end
+
+to place-humans
+  create-humans number-humans [
     set heading random 360
+    set behavior random 2
+    set following-robot? false
     set color white
-    set size 1.2
-    set energy rabbit-initial-energy
+    set size 1
+
+    let valid-patches patches with [not wall? and not exit? and not burning?]
+    if any? valid-patches [ move-to one-of valid-patches ]
   ]
 end
 
-to setup-foxes
-  create-foxes initial-number-foxes [
-    setxy random-xcor random-ycor
-    set heading random 360
-    set color orange
-    set size 1.4
-    set energy fox-initial-energy
+to go
+  if simulation-speed > 0 [ wait (1 / simulation-speed) ]
+
+  spread-fire
+  update-fire-sensors
+  update-controller
+  extinguisher-step
+  sync-rescue-robot-switch
+  activate-control-systems
+
+  death-humans
+  death-rescue-robots
+  update-exit-field
+  update-human-field
+
+  move-rescue-robots
+  death-rescue-robots
+  move-humans
+
+  death-humans
+  process-exits
+  tick
+end
+
+to fire-offices
+  let candidates patches with [office? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
   ]
 end
 
-to move-rabbits
-  ask rabbits [
-    right random 50
-    left random 50
-    forward 1
-    set energy energy - rabbit-move-cost
+to fire-conference
+  let candidates patches with [meeting? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
   ]
 end
 
-to move-foxes
-  ask foxes [
-    right random 50
-    left random 50
-    forward 1
-    set energy energy - fox-move-cost
+to alarm-test
+  trigger-all-alarms
+  ask controllers [
+    set triggered? true
+    if not failed? [
+      set color red
+      set label "ALARM"
+    ]
   ]
 end
 
-to feed-rabbits
-  ask rabbits [
-    if [grass?] of patch-here [
-      set energy energy + rabbits-gain-on-feed
-      ask patch-here [
-        set grass? false
-        set pcolor black
+to fail-controller
+  ;; Manual failure test. The slider controller-failure-room selects which
+  ;; local controller fails. This is additive: press this button with different
+  ;; controller-failure-room values to fail more than one controller.
+  ;; repair-controllers clears all failures.
+  if decentralized-control? [
+    set simulate-controller-failure? true
+    ask controllers with [monitored-room = controller-failure-room] [
+      set failed? true
+      set triggered? false
+      set color gray
+      set label "FAIL"
+    ]
+  ]
+end
+
+to repair-controllers
+  ;; Repair must also turn the failure switch off. Otherwise the selected
+  ;; controller would be repaired for one instant and then failed again on the
+  ;; next tick by enforce-controller-failures.
+  set simulate-controller-failure? false
+  ask controllers [
+    set failed? false
+    set triggered? false
+  ]
+  reset-controller-visuals
+end
+
+to robot-test
+  set alarm-triggered? true
+  set use-rescue-robots? true
+  deploy-rescue-robots
+end
+
+to ignite
+  set burning? true
+  set pcolor red
+end
+
+to spread-fire
+  if fire-started? [
+    ask patches with [burning?] [
+      if random-float 100 < fire-spread-probability [
+        let targets neighbors4 with [not wall? and not exit? and not burning?]
+        if any? targets [ ask one-of targets [ ignite ] ]
       ]
     ]
   ]
 end
 
-to feed-foxes
-  ask foxes [
-    let prey one-of rabbits-here
-    if prey != nobody [
-      ask prey [ die ]
-      set energy energy + foxes-gain-on-feed
+to update-fire-sensors
+  ask fire-sensors [
+    let r monitored-room
+    ifelse any? patches with [room-id = r and burning?] [
+      set detected-fire? true
+      set color red
+      set label "FIRE"
+    ] [
+      set detected-fire? false
+      set color cyan
+      set label "S"
     ]
   ]
 end
 
-to reproduce-rabbits
-  ask rabbits [
-    if random 100 < rabbit-reproduction-chance [
-      set energy energy / 2
-      hatch-rabbits 1 [
-        set energy [energy] of myself
-        right random 360
-        forward 1
+to update-controller
+  ;; Re-evaluate controller/extinguisher state every tick.
+  ;; Failed controllers stay visibly failed. Backup activity is shown on a
+  ;; different working controller, so a controller no longer flickers between
+  ;; FAIL and BACKUP.
+  enforce-controller-failures
+  reset-controller-visuals
+  reset-extinguishers
+
+  ifelse decentralized-control? [
+    decentralized-controller-step
+  ] [
+    centralized-controller-step
+  ]
+
+  ask fire-alarms [
+    ifelse alarm-triggered? [
+      set sounding? true
+      set color red
+      set label "!"
+    ] [
+      set sounding? false
+      set color blue
+      set label "A"
+    ]
+  ]
+end
+
+to enforce-controller-failures
+  ;; The switch is live, but it no longer forces exactly one failed controller.
+  ;; If simulate-controller-failure? is OFF, all controllers are repaired.
+  ;; If it is ON, existing failed? states are preserved, so you can use the
+  ;; controller-failure-room slider + fail-controller button repeatedly to fail
+  ;; several controllers at the same time. If none are failed yet, the selected
+  ;; controller is failed automatically.
+  ifelse decentralized-control? and simulate-controller-failure? [
+    if not any? controllers with [failed?] [
+      ask controllers with [monitored-room = controller-failure-room] [
+        set failed? true
+        set triggered? false
+      ]
+    ]
+  ] [
+    ask controllers [ set failed? false ]
+  ]
+end
+
+to reset-controller-visuals
+  ;; Stable visual state before each control step. Triggered and backup states
+  ;; are then drawn on top of this baseline during the current tick.
+  ask controllers [
+    set triggered? false
+    ifelse failed? [
+      set color gray
+      set label "FAIL"
+    ] [
+      ifelse decentralized-control? [
+        set color violet
+        set label word "C" monitored-room
+      ] [
+        set color yellow
+        set label "CTRL"
       ]
     ]
   ]
 end
 
-to reproduce-foxes
-  ask foxes [
-    if random 100 < fox-reproduction-chance [
-      set energy energy / 2
-      hatch-foxes 1 [
-        set energy [energy] of myself
-        right random 360
-        forward 1
+to reset-extinguishers
+  ;; Extinguishers are command-driven, not self-driven. They turn ON only
+  ;; during this tick if a working controller commands them.
+  ask fire-extinguishers [
+    set active? false
+    set color gray
+    set label "E"
+  ]
+end
+
+to centralized-controller-step
+  ;; One controller receives all sensor information and controls all extinguishers.
+  let fire-detected? any? fire-sensors with [detected-fire?]
+  if fire-detected? [
+    set alarm-triggered? true
+    ask controllers [
+      set triggered? true
+      if not failed? [
+        set color red
+        set label "ALARM"
+      ]
+    ]
+    if use-fire-extinguishers? [
+      ask fire-extinguishers [
+        set active? true
+        set color orange
+        set label "ON"
       ]
     ]
   ]
 end
 
-to death
-  ask turtles [
-    if energy <= 0 [ die ]
-  ]
-end
-
-to grow-grass
-  ask patches with [not grass?] [
-    if any? neighbors with [grass?] [
-      if random 100 < grass-regrowth-probability [
-        set grass? true
-        set pcolor green
+to decentralized-controller-step
+  ;; Each room controller only reads its own room sensor and only commands
+  ;; extinguishers in that same room. Alarms are still global.
+  ask controllers with [not failed?] [
+    let my-room monitored-room
+    let local-fire? any? fire-sensors with [monitored-room = my-room and detected-fire?]
+    if local-fire? [
+      set triggered? true
+      set color red
+      set label word "F" my-room
+      set alarm-triggered? true
+      if use-fire-extinguishers? [
+        ask fire-extinguishers with [monitored-room = my-room] [
+          set active? true
+          set color orange
+          set label "ON"
+        ]
       ]
     ]
   ]
 
-  let random-empty-patch one-of patches with [not grass?]
-  if random-empty-patch != nobody [
-    ask random-empty-patch [
-      set grass? true
-      set pcolor green
+  ;; Backup collaboration is fault tolerance: failed controllers stay visibly
+  ;; failed. A different working controller is marked BACKUP and temporarily
+  ;; commands the failed room's extinguishers. If all controllers are failed,
+  ;; no BACKUP label appears and no failed-room extinguishers activate.
+  if backup-collaboration? [
+    let working-controllers controllers with [not failed?]
+    if any? working-controllers [
+      ask fire-sensors with [detected-fire?] [
+        let burning-room monitored-room
+        let local-controller one-of controllers with [monitored-room = burning-room]
+        if local-controller != nobody and [failed?] of local-controller [
+          let backup min-one-of working-controllers [distance myself]
+          if backup != nobody [
+            ask backup [
+              set triggered? true
+              set color orange
+              set label "BACKUP"
+            ]
+            set alarm-triggered? true
+            if use-fire-extinguishers? [
+              ask fire-extinguishers with [monitored-room = burning-room] [
+                set active? true
+                set color orange
+                set label "ON"
+              ]
+            ]
+          ]
+        ]
+      ]
     ]
+  ]
+end
+
+to trigger-all-alarms
+  set alarm-triggered? true
+  ask fire-alarms [
+    set sounding? true
+    set color red
+    set label "!"
+  ]
+end
+
+to extinguisher-step
+  if use-fire-extinguishers? [
+    ask fire-extinguishers with [active?] [
+      ;; Extinguishers affect only fire they can reach in line-of-sight.
+      ;; This prevents them from putting out fire through walls.
+      let reachable-fire patches in-radius extinguisher-radius with [burning?]
+      foreach sort reachable-fire [ target-patch ->
+        if can-extinguish-patch? target-patch [
+          ask target-patch [
+            set burning? false
+            set pcolor base-color
+          ]
+        ]
+      ]
+    ]
+  ]
+end
+
+to-report can-extinguish-patch? [target-patch]
+  ;; Same idea as robot visibility: radius alone is not enough,
+  ;; because walls should block the extinguisher effect.
+  if target-patch = nobody [ report false ]
+
+  let dist distance target-patch
+  if dist = 0 [ report true ]
+
+  let dir towards target-patch
+  let step 0.5
+  let travelled step
+
+  while [travelled < dist] [
+    let p patch-at-heading-and-distance dir travelled
+    if p = nobody [ report false ]
+    if [wall?] of p [ report false ]
+    set travelled travelled + step
+  ]
+
+  report true
+end
+to sync-rescue-robot-switch
+  ;; If the robot solution is turned off, remove active robots and fully reset
+  ;; robot-following state. This prevents old robots from staying on the map
+  ;; and confusing humans when the switch is turned on again later.
+  if not use-rescue-robots? [
+    if any? rescue-robots [ ask rescue-robots [ die ] ]
+    set robots-deployed? false
+    ask humans [
+      set following-robot? false
+      set color white
+    ]
+  ]
+end
+
+to activate-control-systems
+  if alarm-triggered? [
+    if use-rescue-robots? [ deploy-rescue-robots ]
+  ]
+end
+
+to deploy-rescue-robots
+  if not robots-deployed? [
+    let exits patches with [exit?]
+    if any? exits [
+      ask exits [
+        sprout-rescue-robots 1 [
+          set color violet
+          set size 1.4
+          set label "R"
+          set returning-to-exit? false
+          set target-human nobody
+        ]
+      ]
+      set robots-deployed? true
+    ]
+  ]
+end
+
+to update-exit-field
+  ask patches [ set exit-value 0 ]
+  ask patches with [exit?] [ set exit-value 1000 ]
+
+  repeat 12 [
+    diffuse exit-value 0.75
+    ask patches with [wall? or burning?] [ set exit-value 0 ]
+    ask patches with [exit?] [ set exit-value 1000 ]
+  ]
+end
+
+to update-human-field
+  ;; Navigation field used by rescue robots while searching.
+  ;; High values flow outward from humans, but not through walls or fire.
+  ask patches [ set human-value 0 ]
+  ask humans [ ask patch-here [ set human-value 1000 ] ]
+
+  repeat 18 [
+    diffuse human-value 0.75
+    ask patches with [wall? or burning?] [ set human-value 0 ]
+    ask humans [ ask patch-here [ set human-value 1000 ] ]
+  ]
+end
+
+to move-rescue-robots
+  if not use-rescue-robots? [ stop ]
+
+  ;; Reassign targets every tick, but do not let several robots claim the
+  ;; same person. Robots with no available target return to an exit instead
+  ;; of piling onto the same human.
+  assign-robot-targets
+
+  ask rescue-robots [
+    ;; If there are no people left, go back to an exit and wait.
+    if not any? humans [
+      set target-human nobody
+      set returning-to-exit? true
+    ]
+
+    ;; A robot that has no unique person target should wait/return at an exit.
+    if target-human = nobody [
+      set returning-to-exit? true
+    ]
+
+    ;; Once a robot reaches the area of its assigned person, it returns to the
+    ;; exit. Nearby people that see it will follow the exit field.
+    if target-human != nobody and distance target-human <= 2 [
+      set returning-to-exit? true
+    ]
+
+    ifelse returning-to-exit? [
+      robot-step-to-exit
+
+      ;; When the robot has reached an exit and there are still humans, it can
+      ;; leave again on the next tick with a fresh target.
+      if [exit?] of patch-here and any? humans [
+        set returning-to-exit? false
+        set target-human nobody
+      ]
+    ] [
+      robot-step-to-human
+    ]
+  ]
+end
+
+to assign-robot-targets
+  ;; Keep valid targets, remove targets that disappeared.
+  ask rescue-robots [
+    if target-human != nobody [
+      if not member? target-human sort humans [
+        set target-human nobody
+      ]
+    ]
+  ]
+
+  ;; Robots that are searching choose a human not already claimed by another
+  ;; robot. If none is available, that robot goes back to an exit.
+  ask rescue-robots with [not returning-to-exit?] [
+    let claimed [target-human] of other rescue-robots with [target-human != nobody]
+    let candidates humans with [not member? self claimed]
+
+    ifelse any? candidates [
+      set target-human min-one-of candidates [distance myself]
+    ] [
+      set target-human nobody
+      set returning-to-exit? true
+    ]
+  ]
+end
+
+to robot-step-to-human
+  if target-human = nobody [
+    set returning-to-exit? true
+    robot-step-to-exit
+    stop
+  ]
+
+  let options neighbors4 with [not wall? and not burning? and not any? rescue-robots-here]
+  if not any? options [
+    set options neighbors4 with [not wall? and not burning?]
+  ]
+
+  if any? options [
+    let t target-human
+
+    ;; This hybrid score prevents robots from freezing at doors/corners.
+    ;; human-value guides them through corridors, distance keeps them focused
+    ;; on their assigned person, and the robot penalty keeps them separated.
+    let best max-one-of options [
+      human-value - (2 * distance t) - (15 * count rescue-robots-on self)
+    ]
+    move-to best
+  ]
+end
+
+to robot-step-to-exit
+  let options neighbors4 with [not wall? and not burning? and not any? rescue-robots-here]
+  if not any? options [
+    set options neighbors4 with [not wall? and not burning?]
+  ]
+
+  if any? options [
+    let best max-one-of options [exit-value - (10 * count rescue-robots-on self)]
+
+    ;; If already at an exit/local maximum, do not freeze the whole system.
+    ;; The next tick will either assign a target or keep this robot waiting.
+    ifelse [exit?] of patch-here [
+      if target-human != nobody [ move-to best ]
+    ] [
+      move-to best
+    ]
+  ]
+end
+
+to move-humans
+  ask humans [
+    set following-robot? false
+
+    ifelse alarm-triggered? [
+      ;; If robots are disabled, people must ignore existing robots completely.
+      ifelse use-rescue-robots? [
+        let visible-robot nearest-visible-robot
+        ifelse visible-robot != nobody [
+          set following-robot? true
+          set color sky
+          follow-robot visible-robot
+        ] [
+          set color white
+          evacuate
+        ]
+      ] [
+        set color white
+        evacuate
+      ]
+    ] [
+      if behavior = 1 [ random-human-move ]
+    ]
+  ]
+end
+
+to-report nearest-visible-robot
+  let target nobody
+  let best-distance 999999
+  let nearby rescue-robots in-radius human-robot-vision
+
+  foreach sort nearby [ r ->
+    if can-see-robot? r [
+      let d distance r
+      if d < best-distance [
+        set best-distance d
+        set target r
+      ]
+    ]
+  ]
+
+  report target
+end
+
+to-report can-see-robot? [r]
+  ;; Distance alone allows people to "see" robots through walls.
+  ;; This line-of-sight check samples patches between the human and the robot
+  ;; and rejects visibility if a wall patch is between them.
+  if not use-rescue-robots? [ report false ]
+  if r = nobody [ report false ]
+  let dist distance r
+  if dist = 0 [ report true ]
+  if dist > human-robot-vision [ report false ]
+
+  let dir towards r
+  let step 0.5
+  let travelled step
+
+  while [travelled < dist] [
+    let p patch-at-heading-and-distance dir travelled
+    if p = nobody [ report false ]
+    if [wall?] of p [ report false ]
+    set travelled travelled + step
+  ]
+
+  report true
+end
+
+to follow-robot [target]
+  ;; A visible rescue robot acts as a guide/signal: the human should move
+  ;; toward the exit field, not physically stick to the robot forever.
+  ;; This also avoids bad behavior after toggling robots off/on.
+  ifelse target != nobody [
+    evacuate
+  ] [
+    evacuate
+  ]
+end
+
+to random-human-move
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [ move-to one-of options ]
+end
+
+to evacuate
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [
+    move-to max-one-of options [exit-value]
+  ]
+end
+
+to death-rescue-robots
+  ask rescue-robots with [[burning?] of patch-here] [
+    set robots-lost robots-lost + 1
+    die
+  ]
+end
+
+to death-humans
+  ask humans with [[burning?] of patch-here] [
+    set dead dead + 1
+    die
+  ]
+end
+
+to process-exits
+  ask humans with [[exit?] of patch-here] [
+    set saved saved + 1
+    die
   ]
 end
 ]]></code>
   <widgets>
-    <view x="870" wrappingAllowedX="true" y="80" frameRate="30.0" minPycor="-16" height="549" showTickCounter="true" patchSize="16.52" fontSize="10" wrappingAllowedY="true" width="549" tickCounterLabel="ticks" maxPycor="16" updateMode="0" maxPxcor="16" minPxcor="-16"></view>
-    <button x="20" y="35" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="80" display="setup">setup</button>
-    <button x="110" y="35" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="80" display="go">go</button>
-    <slider x="20" step="1" y="95" max="500" width="270" display="initial-number-rabbits" height="50" min="0" direction="Horizontal" default="120.0" variable="initial-number-rabbits"></slider>
-    <slider x="20" step="1" y="150" max="200" width="270" display="initial-number-foxes" height="50" min="0" direction="Horizontal" default="40.0" variable="initial-number-foxes"></slider>
-    <slider x="20" step="1" y="205" max="100" width="270" display="rabbit-initial-energy" height="50" min="0" direction="Horizontal" default="20.0" variable="rabbit-initial-energy"></slider>
-    <slider x="20" step="1" y="260" max="100" width="270" display="fox-initial-energy" height="50" min="0" direction="Horizontal" default="30.0" variable="fox-initial-energy"></slider>
-    <slider x="20" step="0.1" y="315" max="5" width="270" display="rabbit-move-cost" height="50" min="0" direction="Horizontal" default="1.0" variable="rabbit-move-cost"></slider>
-    <slider x="20" step="0.1" y="370" max="5" width="270" display="fox-move-cost" height="50" min="0" direction="Horizontal" default="1.5" variable="fox-move-cost"></slider>
-    <slider x="20" step="1" y="425" max="100" width="270" display="rabbit-reproduction-chance" height="50" min="0" direction="Horizontal" default="4.0" variable="rabbit-reproduction-chance"></slider>
-    <slider x="20" step="1" y="480" max="100" width="270" display="fox-reproduction-chance" height="50" min="0" direction="Horizontal" default="3.0" variable="fox-reproduction-chance"></slider>
-    <slider x="300" step="1" y="95" max="50" width="150" display="rabbits-gain-on-feed" height="50" min="0" direction="Horizontal" default="8.0" variable="rabbits-gain-on-feed"></slider>
-    <slider x="300" step="1" y="150" max="100" width="150" display="foxes-gain-on-feed" height="50" min="0" direction="Horizontal" default="20.0" variable="foxes-gain-on-feed"></slider>
-    <slider x="300" step="1" y="205" max="100" width="150" display="grass-regrowth-probability" height="50" min="0" direction="Horizontal" default="5.0" variable="grass-regrowth-probability"></slider>
-    <slider x="300" step="1" y="260" max="20" width="150" display="simulation-speed" height="50" min="1" direction="Horizontal" default="10.0" variable="simulation-speed"></slider>
-    <plot x="455" autoPlotX="true" yMax="50.0" autoPlotY="true" y="75" xMin="0.0" height="230" legend="true" xMax="10.0" yMin="0.0" width="360" display="Average Energy">
+    <view x="315" wrappingAllowedX="false" y="25" frameRate="30.0" minPycor="0" height="544" showTickCounter="true" patchSize="16.0" fontSize="10" wrappingAllowedY="false" width="544" tickCounterLabel="ticks" maxPycor="31" updateMode="0" maxPxcor="31" minPxcor="0"></view>
+    <button x="20" y="25" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="70" display="setup">setup</button>
+    <button x="100" y="25" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="70" display="go">go</button>
+    <button x="20" y="80" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="115" display="fire-offices">fire-offices</button>
+    <button x="145" y="80" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="145" display="fire-conference">fire-conference</button>
+    <button x="20" y="130" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="115" display="alarm-test">alarm-test</button>
+    <button x="145" y="130" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="115" display="robot-test">robot-test</button>
+    <slider x="20" step="1" y="185" max="200" width="260" display="number-humans" height="50" min="0" direction="Horizontal" default="80.0" variable="number-humans"></slider>
+    <slider x="20" step="1" y="240" max="100" width="260" display="fire-spread-probability" height="50" min="0" direction="Horizontal" default="10.0" variable="fire-spread-probability"></slider>
+    <slider x="20" step="1" y="295" max="10" width="260" display="extinguisher-radius" height="50" min="1" direction="Horizontal" default="4.0" variable="extinguisher-radius"></slider>
+    <slider x="20" step="1" y="350" max="20" width="260" display="robot-vision-radius" height="50" min="1" direction="Horizontal" default="8.0" variable="robot-vision-radius"></slider>
+    <slider x="20" step="1" y="405" max="15" width="260" display="human-robot-vision" height="50" min="1" direction="Horizontal" default="6.0" variable="human-robot-vision"></slider>
+    <slider x="20" step="1" y="460" max="60" width="260" display="simulation-speed" height="50" min="1" direction="Horizontal" default="20.0" variable="simulation-speed"></slider>
+    <switch x="20" y="525" height="40" on="true" variable="use-fire-extinguishers?" width="180" display="use-fire-extinguishers?"></switch>
+    <switch x="20" y="570" height="40" on="true" variable="use-rescue-robots?" width="160" display="use-rescue-robots?"></switch>
+    <monitor x="885" precision="0" y="25" height="60" fontSize="11" width="120" display="humans left">count humans</monitor>
+    <monitor x="1015" precision="0" y="25" height="60" fontSize="11" width="110" display="saved">saved</monitor>
+    <monitor x="1135" precision="0" y="25" height="60" fontSize="11" width="110" display="dead">dead</monitor>
+    <monitor x="1255" precision="0" y="25" height="60" fontSize="11" width="130" display="fire patches">count patches with [burning?]</monitor>
+    <monitor x="885" precision="0" y="85" height="60" fontSize="11" width="145" display="alarm triggered?">alarm-triggered?</monitor>
+    <monitor x="1040" precision="0" y="85" height="60" fontSize="11" width="145" display="extinguishers on">count fire-extinguishers with [active?]</monitor>
+    <monitor x="1195" precision="0" y="85" height="60" fontSize="11" width="130" display="robots">count rescue-robots</monitor>
+    <monitor x="1335" precision="0" y="85" height="60" fontSize="11" width="130" display="robots lost">robots-lost</monitor>
+    <plot x="885" autoPlotX="true" yMax="100.0" autoPlotY="true" y="155" xMin="0.0" height="260" legend="true" xMax="10.0" yMin="0.0" width="500" display="Evacuation Control">
       <setup></setup>
       <update></update>
-      <pen interval="1.0" mode="0" display="rabbits" color="-16645118" legend="true">
+      <pen interval="1.0" mode="0" display="saved" color="-13840069" legend="true">
         <setup></setup>
-        <update>plot ifelse-value any? rabbits [mean [energy] of rabbits] [0]</update>
+        <update>plot saved</update>
       </pen>
-      <pen interval="1.0" mode="0" display="foxes" color="-2674135" legend="true">
+      <pen interval="1.0" mode="0" display="dead" color="-2674135" legend="true">
         <setup></setup>
-        <update>plot ifelse-value any? foxes [mean [energy] of foxes] [0]</update>
+        <update>plot dead</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="humans" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot count humans</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="fire" color="-2674135" legend="true">
+        <setup></setup>
+        <update>plot count patches with [burning?]</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="robots" color="-8630108" legend="true">
+        <setup></setup>
+        <update>plot count rescue-robots</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="robots lost" color="-5825686" legend="true">
+        <setup></setup>
+        <update>plot robots-lost</update>
       </pen>
     </plot>
-    <plot x="455" autoPlotX="true" yMax="200.0" autoPlotY="true" y="320" xMin="0.0" height="250" legend="true" xMax="10.0" yMin="0.0" width="360" display="Population">
-      <setup></setup>
-      <update></update>
-      <pen interval="1.0" mode="0" display="rabbits" color="-16777216" legend="true">
-        <setup></setup>
-        <update>plot count rabbits</update>
-      </pen>
-      <pen interval="1.0" mode="0" display="foxes" color="-2674135" legend="true">
-        <setup></setup>
-        <update>plot count foxes</update>
-      </pen>
-    </plot>
-    <monitor x="455" precision="0" y="585" height="60" fontSize="11" width="105" display="rabbits">count rabbits</monitor>
-    <monitor x="580" precision="2" y="585" height="60" fontSize="11" width="145" display="avg rabbit energy">ifelse-value any? rabbits [mean [energy] of rabbits] [0]</monitor>
-    <monitor x="740" precision="0" y="585" height="60" fontSize="11" width="105" display="foxes">count foxes</monitor>
-    <monitor x="455" precision="2" y="660" height="60" fontSize="11" width="145" display="avg fox energy">ifelse-value any? foxes [mean [energy] of foxes] [0]</monitor>
-    <monitor x="615" precision="0" y="660" height="60" fontSize="11" width="105" display="grass">count patches with [grass?]</monitor>
+    <button x="20" y="625" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="115" display="fail-controller">fail-controller</button>
+    <button x="145" y="625" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="145" display="repair-controllers">repair-controllers</button>
+    <slider x="20" step="1" y="680" max="4" width="260" display="controller-failure-room" height="50" min="1" direction="Horizontal" default="3.0" variable="controller-failure-room"></slider>
+    <switch x="20" y="740" height="40" on="true" variable="decentralized-control?" width="210" display="decentralized-control?"></switch>
+    <switch x="20" y="785" height="40" on="true" variable="simulate-controller-failure?" width="250" display="simulate-controller-failure?"></switch>
+    <switch x="20" y="830" height="40" on="false" variable="backup-collaboration?" width="230" display="backup-collaboration?"></switch>
+    <monitor x="885" precision="0" y="425" height="60" fontSize="11" width="165" display="controllers triggered">count controllers with [triggered?]</monitor>
+    <monitor x="1060" precision="0" y="425" height="60" fontSize="11" width="145" display="failed controllers">count controllers with [failed?]</monitor>
+    <monitor x="1215" precision="0" y="425" height="60" fontSize="11" width="145" display="sensors detecting">count fire-sensors with [detected-fire?]</monitor>
   </widgets>
-  <info>## WHAT IS IT?
+  <info>Lab 12 - Decentralized Control System based on multi-agent systems.
 
-RIA Lab 5 / Lab 2-IA Part II: Simple Navigation. This extends Part I with uneven food distribution, nutrient-rich food, and guided movement using a limited field of view.
+This version extends the Lab 11 fire evacuation/control model with decentralized room controllers.
 
-## HOW TO USE IT
+Centralized mode: one controller receives all sensor data and commands all extinguishers.
+Decentralized mode: one controller per room receives only local sensor data and commands only local extinguishers. Any detecting controller triggers all alarms globally.
 
-Press setup, then go. Green patches are normal food; lime patches are nutrient-rich food; black patches are regenerating.
-
-When guided-movement? is on, turtles search inside a cone controlled by vision-radius and vision-angle, then face the best visible food patch.
-
-The simulation-speed slider controls the delay between ticks: higher = faster, lower = slower.
-</info>
+Includes latest Lab 11 robot fixes: line-of-sight vision blocked by walls, robots can be destroyed by fire, robot toggle cleanup, and repaired robot movement.</info>
   <turtleShapes>
     <shape name="default" rotatable="true" editableColorIndex="0">
       <polygon color="-1920102913" filled="true" marked="true">

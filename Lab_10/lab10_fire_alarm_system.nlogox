@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.3" snapToGrid="true">
+  <code><![CDATA[breed [humans human]
+breed [fire-alarms fire-alarm]
+breed [fire-sensors fire-sensor]
+breed [controllers controller]
+
+humans-own [ behavior ]  ;; 0 = stays before alarm, 1 = moves before alarm
+fire-alarms-own [ monitored-room sounding? ]
+fire-sensors-own [ monitored-room detected-fire? ]
+
+patches-own [
+  exit-value
+  wall?
+  exit?
+  office?
+  meeting?
+  corridor?
+  burning?
+  room-id
+]
+
+globals [
+  dead
+  saved
+  fire-started?
+  alarm-triggered?
+]
+
+to setup
+  clear-all
+  set dead 0
+  set saved 0
+  set fire-started? false
+  set alarm-triggered? false
+  set-default-shape humans "person"
+  set-default-shape fire-alarms "circle"
+  set-default-shape fire-sensors "triangle"
+  set-default-shape controllers "square"
+  load-patches
+  classify-patches
+  place-monitoring-agents
+  place-humans
+  update-exit-field
+  reset-ticks
+end
+
+to load-patches
+  ifelse use-floor2? and file-exists? "floor2.bmp" [
+    import-pcolors "floor2.bmp"
+  ] [
+    ifelse file-exists? "floor.bmp" [
+      import-pcolors "floor.bmp"
+    ] [
+      draw-fallback-floor
+    ]
+  ]
+end
+
+to draw-fallback-floor
+  ask patches [ set pcolor 5 ]
+  ask patches with [pxcor = min-pxcor or pxcor = max-pxcor or pycor = min-pycor or pycor = max-pycor] [ set pcolor 0 ]
+  ask patches with [pxcor = 15 or pycor = 15] [ set pcolor 0 ]
+  ask patches with [pxcor < 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor > 15 and pycor > 15] [ set pcolor 105 ]
+  ask patches with [pxcor < 15 and pycor < 15] [ set pcolor 115.3 ]
+  ask patches with [pxcor > 15 and pycor < 15] [ set pcolor 105 ]
+  ask patches with [pxcor = min-pxcor and pycor = 5] [ set pcolor 64.5 ]
+  ask patches with [pxcor = max-pxcor and pycor = 26] [ set pcolor 64.5 ]
+end
+
+to classify-patches
+  ask patches [
+    set burning? false
+    set exit-value 0
+    set wall? (pcolor = 0)
+    set exit? (pcolor = 64.5)
+    set office? (pcolor = 105)
+    set meeting? (pcolor = 115.3)
+    set corridor? (not wall? and not exit? and not office? and not meeting?)
+    set room-id -1
+
+    ;; Simple dynamic labeling for this floor plan: rooms are separated by walls
+    ;; and by the four quadrants of the image.
+    if office? or meeting? [
+      if pxcor < 16 and pycor >= 16 [ set room-id 1 ]
+      if pxcor >= 16 and pycor >= 16 [ set room-id 2 ]
+      if pxcor < 16 and pycor < 16 [ set room-id 3 ]
+      if pxcor >= 16 and pycor < 16 [ set room-id 4 ]
+    ]
+  ]
+end
+
+to place-monitoring-agents
+  let rooms remove-duplicates [room-id] of patches with [room-id > 0]
+  foreach rooms [ r ->
+    let room-patches patches with [room-id = r]
+    if any? room-patches [
+      create-fire-sensors 1 [
+        move-to one-of room-patches
+        set monitored-room r
+        set detected-fire? false
+        set color cyan
+        set size 1.2
+        set label "S"
+      ]
+      create-fire-alarms 1 [
+        move-to max-one-of room-patches [pxcor + pycor]
+        set monitored-room r
+        set sounding? false
+        set color blue
+        set size 1.2
+        set label "A"
+      ]
+    ]
+  ]
+
+  let controller-patch one-of patches with [wall?]
+  if controller-patch = nobody [ set controller-patch patch 0 0 ]
+  create-controllers 1 [
+    move-to controller-patch
+    set color yellow
+    set size 1.4
+    set label "CTRL"
+  ]
+end
+
+to place-humans
+  create-humans number-humans [
+    set heading random 360
+    set behavior random 2
+    set color white
+    set size 1
+    let valid-patches patches with [not wall? and not exit? and not burning?]
+    if any? valid-patches [ move-to one-of valid-patches ]
+  ]
+end
+
+to go
+  if simulation-speed > 0 [ wait (1 / simulation-speed) ]
+  spread-fire
+  update-fire-sensors
+  update-controller-and-alarms
+  death-humans
+  update-exit-field
+  move-humans
+  death-humans
+  process-exits
+  tick
+end
+
+to fire-offices
+  let candidates patches with [office? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
+  ]
+end
+
+to fire-conference
+  let candidates patches with [meeting? and not burning?]
+  if any? candidates [
+    ask one-of candidates [ ignite ]
+    set fire-started? true
+  ]
+end
+
+to alarm-test
+  set alarm-triggered? true
+  update-controller-and-alarms
+end
+
+to ignite
+  set burning? true
+  set pcolor red
+end
+
+to spread-fire
+  if fire-started? [
+    ask patches with [burning?] [
+      if random-float 100 < fire-spread-probability [
+        let targets neighbors4 with [not wall? and not exit? and not burning?]
+        if any? targets [ ask one-of targets [ ignite ] ]
+      ]
+    ]
+  ]
+end
+
+to update-fire-sensors
+  ask fire-sensors [
+    let r monitored-room
+    ifelse any? patches with [room-id = r and burning?] [
+      set detected-fire? true
+      set color red
+      set label "FIRE"
+    ] [
+      set detected-fire? false
+      set color cyan
+      set label "S"
+    ]
+  ]
+end
+
+to update-controller-and-alarms
+  if any? fire-sensors with [detected-fire?] [ set alarm-triggered? true ]
+
+  ask controllers [
+    ifelse alarm-triggered? [
+      set color red
+      set label "ALARM"
+    ] [
+      set color yellow
+      set label "CTRL"
+    ]
+  ]
+
+  ask fire-alarms [
+    ifelse alarm-triggered? [
+      set sounding? true
+      set color red
+      set label "!"
+    ] [
+      set sounding? false
+      set color blue
+      set label "A"
+    ]
+  ]
+end
+
+to update-exit-field
+  ask patches [ set exit-value 0 ]
+  ask patches with [exit?] [ set exit-value 1000 ]
+
+  repeat 12 [
+    diffuse exit-value 0.75
+    ask patches with [wall? or burning?] [ set exit-value 0 ]
+    ask patches with [exit?] [ set exit-value 1000 ]
+  ]
+end
+
+to move-humans
+  ask humans [
+    ifelse alarm-triggered? [
+      evacuate
+    ] [
+      if behavior = 1 [ random-human-move ]
+    ]
+  ]
+end
+
+to random-human-move
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [ move-to one-of options ]
+end
+
+to evacuate
+  let options neighbors4 with [not wall? and not burning?]
+  if any? options [
+    move-to max-one-of options [exit-value]
+  ]
+end
+
+to death-humans
+  ask humans with [[burning?] of patch-here] [
+    set dead dead + 1
+    die
+  ]
+end
+
+to process-exits
+  ask humans with [[exit?] of patch-here] [
+    set saved saved + 1
+    die
+  ]
+end
+]]></code>
+  <widgets>
+    <view x="310" y="25" width="544" height="544" patchSize="16" minPxcor="0" maxPxcor="31" minPycor="0" maxPycor="31" wrappingAllowedX="false" wrappingAllowedY="false" fontSize="10" updateMode="0" frameRate="30.0" showTickCounter="true" tickCounterLabel="ticks"></view>
+    <button x="20" y="25" width="70" height="40" display="setup" kind="Observer" forever="false" disableUntilTicks="false">setup</button>
+    <button x="100" y="25" width="70" height="40" display="go" kind="Observer" forever="true" disableUntilTicks="false">go</button>
+    <button x="20" y="80" width="115" height="40" display="fire-offices" kind="Observer" forever="false" disableUntilTicks="false">fire-offices</button>
+    <button x="145" y="80" width="145" height="40" display="fire-conference" kind="Observer" forever="false" disableUntilTicks="false">fire-conference</button>
+    <button x="20" y="130" width="115" height="40" display="alarm-test" kind="Observer" forever="false" disableUntilTicks="false">alarm-test</button>
+    <slider x="20" y="185" width="260" height="50" variable="number-humans" display="number-humans" min="0" max="200" default="80" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="240" width="260" height="50" variable="fire-spread-probability" display="fire-spread-probability" min="0" max="100" default="10" step="1" direction="Horizontal"></slider>
+    <slider x="20" y="295" width="260" height="50" variable="simulation-speed" display="simulation-speed" min="1" max="60" default="20" step="1" direction="Horizontal"></slider>
+    <switch x="20" y="360" width="150" height="40" variable="use-floor2?" display="use-floor2?" on="false"></switch>
+    <monitor x="885" y="25" width="120" height="50" display="humans left">count humans</monitor>
+    <monitor x="1015" y="25" width="110" height="50" display="saved">saved</monitor>
+    <monitor x="1135" y="25" width="110" height="50" display="dead">dead</monitor>
+    <monitor x="1255" y="25" width="130" height="50" display="fire patches">count patches with [burning?]</monitor>
+    <monitor x="885" y="85" width="150" height="50" display="alarm triggered?">alarm-triggered?</monitor>
+    <monitor x="1045" y="85" width="150" height="50" display="detecting sensors">count fire-sensors with [detected-fire?]</monitor>
+    <monitor x="1205" y="85" width="150" height="50" display="sounding alarms">count fire-alarms with [sounding?]</monitor>
+    <plot x="885" y="155" width="500" height="260" display="Evacuation and Alarm" xAxis="ticks" yAxis="count">
+      <pen name="saved" interval="1" mode="0" color="55">plot saved</pen>
+      <pen name="dead" interval="1" mode="0" color="15">plot dead</pen>
+      <pen name="humans" interval="1" mode="0" color="0">plot count humans</pen>
+      <pen name="sensors" interval="1" mode="0" color="105">plot count fire-sensors with [detected-fire?]</pen>
+    </plot>
+  </widgets>
+  <info><![CDATA[## WHAT IS IT?
+
+This model extends the Lab 9 fire evacuation model with an intelligent alarm system. Fire sensors monitor rooms, a controller receives their signals, and alarms are triggered when fire is detected. Humans evacuate only after the alarm is triggered.
+
+## HOW IT WORKS
+
+The floor is loaded from `floor.bmp` or `floor2.bmp`. Black patches are walls, green patches are exits, blue/violet room patches are offices or meeting rooms, and red patches are fire. Each room gets one fire sensor and one alarm. The controller is placed on a wall.
+
+When fire starts, sensors check their room. If a sensor detects fire, the controller triggers all alarms. Once the alarm is active, every human evacuates toward the nearest exit, even humans that normally stand still.
+
+## HOW TO USE IT
+
+Press `setup`, then use `fire-offices` or `fire-conference` to start a fire. Press `go` to run. You can also press `alarm-test` to manually trigger the alarm without waiting for a sensor.
+
+`number-humans` controls how many people are created. `fire-spread-probability` controls fire spread. `simulation-speed` controls visual speed. `use-floor2?` loads the alternate floor image if `floor2.bmp` is present.
+
+## THINGS TO NOTICE
+
+Before the alarm, only some humans move. After the alarm, all humans evacuate. Watch the monitors for saved people, fatalities, sensors detecting fire, and triggered alarms.
+]]></info>
+  <turtleShapes></turtleShapes>
+  <linkShapes></linkShapes>
+</model>
